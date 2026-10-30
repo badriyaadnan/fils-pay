@@ -193,7 +193,11 @@ test("failing endpoint: backoff/exhaustion sequence across repeated runDispatchP
   assert.equal(delivery.status, "pending");
   assert.equal(delivery.attempt_count, 1);
   assert.equal(delivery.response_status_code, 500);
-  const expectedDelay1 = backoffDelayMs(1, config);
+  // Changed: pass a fixed jitter (0.5 = no jitter) so the check is not random.
+  // Before, Math.random made this equal 1000 only ~0.5% of the time (flaky test).
+  // تغيّر: نعطي jitter ثابت (0.5 = بدون عشوائية) عشان الاختبار ما يصير عشوائي.
+  // قبل، Math.random يخلي الرقم = 1000 بس تقريباً 0.5% من المرات.
+  const expectedDelay1 = backoffDelayMs(1, config, () => 0.5);
   assert.equal(expectedDelay1, 1000);
   const actualDelay1 = delivery.next_attempt_at.getTime() - Date.now();
   assert.ok(Math.abs(actualDelay1 - expectedDelay1) < 3000, `expected ~${expectedDelay1}ms, got ${actualDelay1}ms`);
@@ -213,7 +217,11 @@ test("failing endpoint: backoff/exhaustion sequence across repeated runDispatchP
   delivery = await getDelivery(String(outboxEvent.id), endpoint.id);
   assert.equal(delivery.status, "pending");
   assert.equal(delivery.attempt_count, 2);
-  const expectedDelay2 = backoffDelayMs(2, config);
+  // Changed: pass a fixed jitter (0.5 = no jitter) so the check is not random.
+  // Before, Math.random made this equal 2000 only ~0.5% of the time (flaky test).
+  // تغيّر: نعطي jitter ثابت (0.5 = بدون عشوائية) عشان الاختبار ما يصير عشوائي.
+  // قبل، Math.random يخلي الرقم = 2000 بس تقريباً 0.5% من المرات.
+  const expectedDelay2 = backoffDelayMs(2, config, () => 0.5);
   assert.equal(expectedDelay2, 2000);
   const actualDelay2 = delivery.next_attempt_at.getTime() - Date.now();
   assert.ok(Math.abs(actualDelay2 - expectedDelay2) < 3000, `expected ~${expectedDelay2}ms, got ${actualDelay2}ms`);

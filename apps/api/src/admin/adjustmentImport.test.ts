@@ -125,9 +125,11 @@ test("applyAdjustmentImport reverses leg direction for a negative amount", async
   );
   assert.deepEqual(
     legs.rows.map((r) => [r.account_id, r.direction, Number(r.amount_fils)]),
+    // Changed (fix 2.1): -3.50 BD = 3500 fils, not 350 (the old 10x-too-small bug).
+    // تغيّر (إصلاح 2.1): ‎-3.50 دينار = 3500 فلس، مو 350 (نفس خطأ القسمة على 10).
     [
-      ["manual_balance_adjustment_contra", "credit", 350],
-      ["merchant_payable", "debit", 350],
+      ["manual_balance_adjustment_contra", "credit", 3500],
+      ["merchant_payable", "debit", 3500],
     ],
   );
 });
@@ -149,7 +151,9 @@ test("applyAdjustmentImport updates the merchant balance cache", async () => {
     `SELECT cached_payable_fils FROM merchant_balances WHERE merchant_id = $1`,
     [merchantId],
   );
-  assert.equal(Number(balance.rows[0]!.cached_payable_fils), 500);
+  // Changed (fix 2.1): 4.00 + 1.00 BD = 5.000 BD = 5000 fils, not 500.
+  // تغيّر (إصلاح 2.1): 4.00 + 1.00 دينار = 5 دنانير = 5000 فلس، مو 500.
+  assert.equal(Number(balance.rows[0]!.cached_payable_fils), 5000);
 });
 
 test("applyAdjustmentImport links each row to its ledger group", async () => {
