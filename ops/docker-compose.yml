@@ -1,25 +1,34 @@
 # Local development stack for FilsPay: Postgres + api + settlement + reporting,
-# plus one-off migrate and seed jobs.
-# بيئة التشغيل المحلية: قاعدة البيانات + الـ API + التسويات + التقارير،
-# ومهمتين تشتغلون مرة وحدة: migrate (بناء الجداول) وseed (بيانات تجريبية).
+# plus one-off migrate and seed jobs, plus the merchant dashboard (web).
+# بيئة التشغيل: قاعدة البيانات + الـ API + التسويات + التقارير، ومهمتين
+# تشتغلون مرة وحدة: migrate (بناء الجداول) وseed (بيانات تجريبية)، ولوحة التاجر.
 #
 # Run from the repo root / شغّليه من المجلد الرئيسي:
-#   docker compose -f ops/docker-compose.yml up --build
+#   docker compose -f ops/docker-compose.yml up --build -d
 #
 # Fix: services now load ops/.env.docker (env_file) and wait until migrate
 # has finished before starting.
 # الإصلاح: الخدمات الحين تقرا ops/.env.docker، وتنتظر لين migrate يخلص
 # قبل ما تبدأ.
+#
+# Deploy (Dilmune): long-running services have `restart: unless-stopped`, so
+# if one crashes under load (or the server reboots) Docker starts it again.
+# The judges put traffic through the server ("does it stay up").
+# النشر: الخدمات الدايمة فيها restart: unless-stopped، يعني لو طاحت وحدة
+# (أو السيرفر انعاد تشغيله)، Docker يرجّعها لحاله. الحكام بيضغطون السيرفر.
 
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: filspay
       POSTGRES_PASSWORD: filspay_dev_password
       POSTGRES_DB: filspay
+    # Only reachable from this machine, not the internet.
+    # بس من نفس الجهاز، مو من الإنترنت (قاعدة البيانات ما تنفتح للعالم).
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - filspay_pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -68,6 +77,7 @@ services:
       context: ..
       dockerfile: ops/Dockerfile.node
     command: ["npx", "tsx", "apps/api/src/index.ts"]
+    restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
@@ -85,6 +95,7 @@ services:
       context: ..
       dockerfile: ops/Dockerfile.go
     command: ["./settlement", "daemon"]
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgres://filspay:filspay_dev_password@postgres:5432/filspay?sslmode=disable
     env_file: .env.docker
@@ -99,6 +110,7 @@ services:
       context: ..
       dockerfile: ops/Dockerfile.node
     command: ["npx", "tsx", "apps/reporting/src/index.ts"]
+    restart: unless-stopped
     environment:
       DATABASE_URL: postgres://filspay:filspay_dev_password@postgres:5432/filspay?sslmode=disable
     env_file: .env.docker
@@ -109,22 +121,27 @@ services:
         condition: service_completed_successfully
 
   # Merchant dashboard (UI) / لوحة التاجر (الواجهة)
-  # Open / افتحي: http://localhost:5173/dashboard/login
+  # Open / افتحي: http://<server or localhost>:5173/dashboard/login
   web:
     build:
       context: ..
       dockerfile: ops/Dockerfile.node
     working_dir: /app/apps/web
     command: ["npx", "vite", "--config", "/app/ops/web-dev.vite.config.mjs"]
+    restart: unless-stopped
     environment:
       NODE_ENV: development
-      VITE_API_BASE_URL: http://localhost:5173
+      # Empty = same address the page was opened from, so it works on
+      # localhost AND on the server's IP (requests go through the /v1 proxy).
+      # فاضي = نفس العنوان اللي انفتحت منه الصفحة، فيشتغل على localhost
+      # وعلى IP السيرفر (الطلبات تمر من الـ proxy).
+      VITE_API_BASE_URL: ""
     volumes:
       - ./web-dev.vite.config.mjs:/app/ops/web-dev.vite.config.mjs:ro
     ports:
       - "5173:5173"
     depends_on:
       - api
-      
+
 volumes:
   filspay_pgdata:
