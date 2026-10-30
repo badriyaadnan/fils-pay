@@ -1,3 +1,5 @@
+// Fix 6.5: newIdempotencyKey() instead of crypto.randomUUID() (undefined over plain HTTP on the server).
+// إصلاح 6.5: newIdempotencyKey() بدل crypto.randomUUID() (ما يشتغل على HTTP في السيرفر).
 // Fix 4.8 (UI) (FP-212 refunds): Shows the Refund button (RefundDrawer) and the refunded amount.
 // إصلاح 4.8 (UI) (ميزة الاسترجاع): يعرض زر Refund والمبلغ المسترجع.
 
@@ -14,6 +16,7 @@ import { RequireRole } from "../../auth/RequireRole.js";
 import { bhd, dash, dateTime } from "../../format.js";
 import type { TransactionDto, TransactionEventDto } from "../../types.js";
 import { RefundDrawer } from "./RefundDrawer.js";
+import { newIdempotencyKey } from "../../utils/idempotencyKey.js";
 
 type LoadState =
   | { kind: "loading" }
@@ -76,7 +79,7 @@ export function TransactionDetailPage() {
       const input = trimmed === "" ? {} : { amountFils: Number(trimmed) };
       // A fresh Idempotency-Key per click, including a retry after a decline —
       // same discipline as the checkout page's submit handler.
-      await captureTransaction(id, input, crypto.randomUUID());
+      await captureTransaction(id, input, newIdempotencyKey());
       setCaptureOpen(false);
       setCaptureAmount("");
       // Refetch rather than patch: a capture wrote a new transaction_events

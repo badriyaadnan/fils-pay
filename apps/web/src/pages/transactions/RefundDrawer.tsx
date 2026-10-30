@@ -1,3 +1,5 @@
+// Fix 6.5: newIdempotencyKey() instead of crypto.randomUUID() (undefined over plain HTTP on the server).
+// إصلاح 6.5: newIdempotencyKey() بدل crypto.randomUUID() (ما يشتغل على HTTP في السيرفر).
 // Fix 4.8 (UI) (FP-212 refunds): The parked drawer is restored and fixed: right URL, amount typed in BD (not raw fils), ceiling = still refundable, partially refunded can be refunded again, ONE idempotency key per attempt (a retry can never refund twice).
 // إصلاح 4.8 (UI) (ميزة الاسترجاع): رجّعنا نافذة الاسترجاع وصلحناها: الرابط الصح، المبلغ بالدينار (مو بالفلس)، الحد = الباقي، والضغط مرتين ما يسترجع مرتين.
 
@@ -9,6 +11,7 @@ import { useDashboardAuth } from "../../auth/DashboardAuthContext.js";
 import { RequireRole } from "../../auth/RequireRole.js";
 import { bhd } from "../../format.js";
 import type { TransactionDto } from "../../types.js";
+import { newIdempotencyKey } from "../../utils/idempotencyKey.js";
 
 /**
  * FP-212 refund control on the transaction detail page. Restored now that
@@ -48,7 +51,7 @@ export function RefundDrawer({ txn, onRefunded }: RefundDrawerProps) {
   const [amount, setAmount] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [attemptKey, setAttemptKey] = useState<string>(() => crypto.randomUUID());
+  const [attemptKey, setAttemptKey] = useState<string>(() => newIdempotencyKey());
 
   const merchantId = me?.merchant.id;
   const refundableFils = Math.max(0, txn.capturedFils - (txn.refundedFils ?? 0));
@@ -56,7 +59,7 @@ export function RefundDrawer({ txn, onRefunded }: RefundDrawerProps) {
 
   function edit(value: string): void {
     setAmount(value);
-    setAttemptKey(crypto.randomUUID()); // a different request gets a different key
+    setAttemptKey(newIdempotencyKey()); // a different request gets a different key
   }
 
   async function handleRefund(event: React.FormEvent): Promise<void> {
@@ -94,7 +97,7 @@ export function RefundDrawer({ txn, onRefunded }: RefundDrawerProps) {
 
       setOpen(false);
       setAmount("");
-      setAttemptKey(crypto.randomUUID());
+      setAttemptKey(newIdempotencyKey());
       // Refetch rather than patch: the refund wrote a new transaction_events
       // row server-side, so the timeline is stale, not merely shorter.
       await onRefunded();

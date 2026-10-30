@@ -1,9 +1,12 @@
+// Fix 6.5: newIdempotencyKey() instead of crypto.randomUUID() (undefined over plain HTTP on the server).
+// إصلاح 6.5: newIdempotencyKey() بدل crypto.randomUUID() (ما يشتغل على HTTP في السيرفر).
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { formatBhd, toFils } from "@filspay/money";
 import { getPaymentLink, payPaymentLink } from "../../api/paymentLinks.js";
 import { ApiError } from "../../api/client.js";
 import type { PaymentLinkPublicDto, PayPaymentLinkResponse, SimulatedCardInput } from "../../types.js";
+import { newIdempotencyKey } from "../../utils/idempotencyKey.js";
 import "./CheckoutPage.css";
 
 type LoadState =
@@ -55,7 +58,7 @@ export function CheckoutPage() {
 
     // A fresh Idempotency-Key per explicit user action — every click,
     // including a "try again" after a decline, is a new attempt.
-    const idempotencyKey = crypto.randomUUID();
+    const idempotencyKey = newIdempotencyKey();
     const submittedAt = new Date().toISOString();
     setPayState({ kind: "submitting" });
 
