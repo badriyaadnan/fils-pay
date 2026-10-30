@@ -60,9 +60,14 @@ services:
       postgres:
         condition: service_healthy
 
-  # Loads demo data. Runs after migrate.
-  # يحط بيانات تجريبية. يشتغل بعد migrate.
+  # Loads demo data. Runs after migrate. It WIPES and regenerates the demo
+  # tables, so it only runs when asked for by name:
+  #   docker compose -f ops/docker-compose.yml run --rm seed
+  # (a plain `up` / redeploy never touches existing data).
+  # يحط بيانات تجريبية بعد migrate. هو يمسح الجداول ويعيدها، فما يشتغل إلا لو
+  # طلبناه بالاسم. يعني `up` أو إعادة النشر ما تمسح البيانات أبداً.
   seed:
+    profiles: ["seed"]
     build:
       context: ..
       dockerfile: ops/Dockerfile.node

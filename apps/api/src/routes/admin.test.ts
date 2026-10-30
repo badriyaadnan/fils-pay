@@ -1644,3 +1644,31 @@ test("an mdr recalculation whose audit row cannot be written never makes the cal
     "an unloggable action must be BLOCKED, not merely unlogged",
   );
 });
+
+// New (fix 2.19): the status recompute tool must never switch a sandbox merchant to live.
+// جديد (إصلاح 2.19): زر إعادة حساب الحالات ما لازم يحوّل التاجر التجريبي لحقيقي.
+test("recompute-statuses never switches a test_mode (sandbox) merchant to live", async () => {
+  const finance = await signedInAdmin("finance", "recompute-sandbox");
+  const { merchantId } = await createMerchant("recompute-sandbox");
+  await pool.query(`UPDATE merchants SET test_mode = true WHERE id = $1`, [merchantId]);
+  // A captured sandbox transaction: exactly the case that used to flip the flag.
+  // عملية تجريبية مسحوبة: هذي بالضبط الحالة اللي كانت تغيّر نوع التاجر.
+  await pool.query(
+    `INSERT INTO transactions (merchant_id, status, amount_fils, captured_fils, acquirer_reference)
+     VALUES ($1, 'captured', 5000, 5000, $2)`,
+    [merchantId, `acq-${randomUUID()}`],
+  );
+
+  const res = await app.inject({
+    method: "POST",
+    url: `/v1/admin/merchants/${merchantId}/transactions/recompute-statuses`,
+    headers: { cookie: finance.cookie },
+  });
+  assert.equal(res.statusCode, 200, res.body);
+  assert.deepEqual((res.json() as { flagsUpdated: string[] }).flagsUpdated, []);
+
+  const merchant = await pool.query<{ test_mode: boolean }>(`SELECT test_mode FROM merchants WHERE id = $1`, [
+    merchantId,
+  ]);
+  assert.equal(merchant.rows[0]!.test_mode, true, "a sandbox merchant stays in test mode");
+});

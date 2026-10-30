@@ -158,6 +158,15 @@ threw on negative amounts. *Fix:* allow negatives.
 **2.18 Promotional discount parsed as cents** (`payments/discountAdjustment.ts`)
 — `parseFloat(x) * 100`. *Fix:* `parseBhdToFils`.
 
+**2.19 Test merchants paid out for real** (`routes/adminMerchantsRecompute.ts`,
+finance memo: "test merchants keep showing up in the real settlement run") —
+the admin "Recompute transaction statuses" tool also cleared `test_mode`
+whenever it found no open authorizations, but its scan skips `authorized`
+rows, so the count was always 0. *Breaks:* one click switched any sandbox
+merchant to live; the daily close (`test_mode = false`) then settled its fake
+transactions and paid them out. *Fix:* the recompute never changes a merchant's
+mode (regression test in `routes/admin.test.ts`).
+
 ---
 
 ## 3. Duplicates and races
