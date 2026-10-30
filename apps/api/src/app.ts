@@ -1,5 +1,7 @@
 // Fix 4.1 (FP-212 refunds): Register both refund paths (the API one and the dashboard one).
 // إصلاح 4.1 (ميزة الاسترجاع): نسجّل رابطين الاسترجاع (حق الـ API وحق اللوحة).
+// Capacity: load shedding (plugins/loadShedding.ts), limit from API_MAX_IN_FLIGHT.
+// القدرة: نرفض الزيادة بـ 503 (plugins/loadShedding.ts)، والحد من API_MAX_IN_FLIGHT.
 
 import Fastify, { type FastifyInstance } from "fastify";
 import type { Pool } from "pg";
@@ -8,6 +10,7 @@ import { createAcquirerSimulator } from "./acquirer/simulator.js";
 import { cookiesPlugin } from "./plugins/cookies.js";
 import { multipartPlugin } from "./plugins/multipart.js";
 import { errorHandler } from "./plugins/errorHandler.js";
+import { loadSheddingPlugin } from "./plugins/loadShedding.js";
 import { healthRoutes } from "./routes/health.js";
 import { authRoutes } from "./routes/auth.js";
 import { businessProfileRoutes } from "./routes/businessProfile.js";
@@ -49,6 +52,9 @@ export function buildApp(config: Config, pool: Pool, options: BuildAppOptions = 
   app.decorate("acquirer", createAcquirerSimulator(config));
   app.decorate("webhookTransport", options.webhookTransport ?? createFetchTransport());
 
+  // First, so an overloaded API answers 503 before doing any work.
+  // أول شي، عشان لو الـ API مضغوط يرد 503 قبل ما يسوي أي شغل.
+  app.register(loadSheddingPlugin, { maxInFlight: Number(process.env.API_MAX_IN_FLIGHT ?? 0) });
   app.register(cookiesPlugin);
   app.register(multipartPlugin, { config });
   app.setErrorHandler(errorHandler);

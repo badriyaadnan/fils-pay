@@ -16,6 +16,16 @@
 # The judges put traffic through the server ("does it stay up").
 # النشر: الخدمات الدايمة فيها restart: unless-stopped، يعني لو طاحت وحدة
 # (أو السيرفر انعاد تشغيله)، Docker يرجّعها لحاله. الحكام بيضغطون السيرفر.
+#
+# Capacity: the api is limited to 0.5 vCPU / 512 MB (the hosting rule), Node's
+# heap is capped below that so it never gets OOM-killed, and requests above
+# API_MAX_IN_FLIGHT get a fast 503 instead of piling up (plugins/loadShedding.ts).
+# القدرة: الـ api محدود بنص معالج و512 ميجا (شرط الاستضافة)، وذاكرة Node أقل
+# من الحد عشان ما ينقتل، والطلبات الزايدة عن API_MAX_IN_FLIGHT تاخذ 503 بسرعة
+# بدل ما تتكدس.
+#
+# Admin console: http://<server or localhost>:5174
+# لوحة الإدارة: http://<السيرفر أو localhost>:5174
 
 services:
   postgres:
@@ -83,7 +93,27 @@ services:
     environment:
       DATABASE_URL: postgres://filspay:filspay_dev_password@postgres:5432/filspay?sslmode=disable
       SETTLEMENT_INTERNAL_URL: http://settlement:8091
+      # Max requests in progress at once; more get 503 + Retry-After.
+      # أقصى عدد طلبات بنفس اللحظة، والزايد ياخذ 503.
+      API_MAX_IN_FLIGHT: "32"
+      # Keep Node's heap under the 512 MB limit. / ذاكرة Node أقل من حد 512.
+      NODE_OPTIONS: "--max-old-space-size=384"
     env_file: .env.docker
+    # Hosting rule: API limited to 0.5 vCPU and 512 MB.
+    # شرط الاستضافة: الـ API بنص معالج و512 ميجا بالكثير.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+    # Docker marks the api unhealthy if /healthz stops answering.
+    # Docker يعرف إن الـ api مو صاحي لو /healthz وقف يرد.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 40s
     depends_on:
       postgres:
         condition: service_healthy
@@ -140,6 +170,29 @@ services:
       - ./web-dev.vite.config.mjs:/app/ops/web-dev.vite.config.mjs:ro
     ports:
       - "5173:5173"
+    depends_on:
+      - api
+
+  # Admin console (UI) / لوحة الإدارة (الواجهة)
+  # Open / افتحي: http://<server or localhost>:5174
+  admin:
+    build:
+      context: ..
+      dockerfile: ops/Dockerfile.node
+    working_dir: /app/apps/admin
+    command: ["npx", "vite", "--config", "/app/ops/admin-dev.vite.config.mjs"]
+    restart: unless-stopped
+    environment:
+      NODE_ENV: development
+      # Empty = same origin, through the /v1 proxy. / فاضي = نفس العنوان عن طريق الـ proxy.
+      VITE_ADMIN_API_BASE_URL: ""
+      # Where "view as merchant" links point. On the server set PUBLIC_WEB_URL.
+      # وين يودّي رابط "عرض كتاجر". على السيرفر نحط PUBLIC_WEB_URL.
+      VITE_WEB_BASE_URL: ${PUBLIC_WEB_URL:-http://localhost:5173}
+    volumes:
+      - ./admin-dev.vite.config.mjs:/app/ops/admin-dev.vite.config.mjs:ro
+    ports:
+      - "5174:5174"
     depends_on:
       - api
 
