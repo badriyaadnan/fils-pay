@@ -93,15 +93,19 @@ services:
     environment:
       DATABASE_URL: postgres://filspay:filspay_dev_password@postgres:5432/filspay?sslmode=disable
       SETTLEMENT_INTERNAL_URL: http://settlement:8091
+      # Tuned by load test (ops/loadtest): at 0.5 vCPU the API tops out around
+      # 9-10 checkouts/s. Letting more requests in at once (run 2: pool 20,
+      # 48 in flight) did not add throughput, it only made every request
+      # slower. So we keep the work small and turn the rest away fast (503).
+      # ضبطناها باختبار الضغط: بنص معالج الـ API يوصل تقريباً 9-10 دفعات بالثانية.
+      # لما دخّلنا طلبات أكثر بنفس الوقت (المرة الثانية) ما زادت السرعة، بس كل
+      # الطلبات بطت. فنخلي الشغل قليل ونرفض الزايد بسرعة (503).
       # Max requests in progress at once; more get 503 + Retry-After.
       # أقصى عدد طلبات بنفس اللحظة، والزايد ياخذ 503.
-      API_MAX_IN_FLIGHT: "48"
-      # Load test showed the bottleneck: authorize and capture each keep a DB
-      # connection open while waiting 100-400 ms for the acquirer, so 5
-      # connections capped checkout at ~9/s while the CPU was mostly idle.
-      # اختبار الضغط بيّن السبب: الدفع يمسك اتصال بقاعدة البيانات وهو ينتظر
-      # البنك (100-400ms)، فـ 5 اتصالات بس كانت تحد الدفع بـ 9 بالثانية تقريباً.
-      PG_POOL_MAX: "20"
+      API_MAX_IN_FLIGHT: "24"
+      # DB connections. Payments hold one while waiting for the acquirer.
+      # اتصالات قاعدة البيانات. الدفع يمسك اتصال وهو ينتظر البنك.
+      PG_POOL_MAX: "10"
       # Keep Node's heap under the 512 MB limit. / ذاكرة Node أقل من حد 512.
       NODE_OPTIONS: "--max-old-space-size=384"
     env_file: .env.docker
