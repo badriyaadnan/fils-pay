@@ -98,6 +98,10 @@ services:
     environment:
       DATABASE_URL: postgres://filspay:filspay_dev_password@postgres:5432/filspay?sslmode=disable
       SETTLEMENT_INTERNAL_URL: http://settlement:8091
+      # Payment-link URLs point here (the default was localhost, so links made
+      # on the server opened nothing). Set PUBLIC_WEB_URL in ops/.env.
+      # روابط الدفع تودّي هني (كانت localhost، فالرابط ما يفتح من السيرفر).
+      CHECKOUT_BASE_URL: ${PUBLIC_WEB_URL:-http://localhost:5173}
       # Tuned by load test (ops/loadtest): at 0.5 vCPU the API tops out around
       # 9-10 checkouts/s. Letting more requests in at once (run 2: pool 20,
       # 48 in flight) did not add throughput, it only made every request
