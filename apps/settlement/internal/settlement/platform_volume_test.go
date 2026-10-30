@@ -43,7 +43,7 @@ func TestRecordPlatformProcessedVolume_SmallValuesExact(t *testing.T) {
 		}
 	}
 
-	var got int32
+	var got int64 // fix 2.9: column is BIGINT since migration 0074 / العمود صار BIGINT
 	err = tx.QueryRow(ctx, `SELECT total_processed_fils FROM platform_stats WHERE id = 1`).Scan(&got)
 	if err != nil {
 		t.Fatalf("read back total: %v", err)
@@ -65,5 +65,13 @@ func TestVolumeTierMdrBonusBps_BelowAndAtThreshold(t *testing.T) {
 	}
 	if got := VolumeTierMdrBonusBps(2_000_000_000); got != 15 {
 		t.Errorf("exactly at threshold: got %d, want 15", got)
+	}
+	// Added (fix 2.9, answers MK's TODO above): past int32's max
+	// (2,147,483,647) the old int32 counter wrapped negative and the tier
+	// silently switched off.
+	// مضاف (إصلاح 2.9): فوق أقصى رقم لـ int32، العداد القديم يصير سالب
+	// والخصم يختفي.
+	if got := VolumeTierMdrBonusBps(3_000_000_000); got != 15 {
+		t.Errorf("above int32 max: got %d, want 15", got)
 	}
 }

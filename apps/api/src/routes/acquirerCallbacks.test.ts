@@ -59,7 +59,9 @@ function callbackBody(transactionId: string, callbackId: string) {
   };
 }
 
-function signatureHeader(body: unknown, secret = ACQUIRER_SECRET, timestamp = 1_757_930_000): string {
+// Fix 1.8: signs with "now" instead of a fixed 2025 date, because old timestamps are now rejected.
+// إصلاح 1.8: نوقّع بالوقت الحالي بدل تاريخ ثابت من 2025، لأن التواريخ القديمة صارت تنرفض.
+function signatureHeader(body: unknown, secret = ACQUIRER_SECRET, timestamp = Math.floor(Date.now() / 1000)): string {
   const signature = createHmac("sha256", secret).update(`${timestamp}.${JSON.stringify(body)}`).digest("hex");
   return `t=${timestamp},v1=${signature}`;
 }
@@ -119,12 +121,13 @@ test("POST /v1/acquirer/callbacks rejects a tampered signature", async () => {
   assert.equal(await noteCount(callbackId), "0");
 });
 
-// dev-mode behaviour (empty secret). prod rejects — MK
-// am: the test app config sets a secret though? line ~40
-test("POST /v1/acquirer/callbacks accepts a callback sent without a signature header", async () => {
-  // Documents current behavior for the acquirer sandbox's pre-signing
-  // tooling: with no header there is nothing to verify, so the callback is
-  // processed rather than rejected.
+// Changed (fix 1.8): this test used to assert that an UNSIGNED callback was
+// accepted and recorded. That test was locking the bug in place. The route
+// is public and the signature is its only authentication, so an unsigned
+// callback must be rejected.
+// تغيّر (إصلاح 1.8): الاختبار القديم كان يتأكد إن callback بدون توقيع
+// ينقبل، يعني كان "يثبّت" الخطأ. الحين يتأكد إنه ينرفض.
+test("POST /v1/acquirer/callbacks rejects a callback sent without a signature header", async () => {
   const transactionId = await createTransaction();
   const callbackId = `acqcb_${randomUUID()}`;
 
@@ -134,9 +137,25 @@ test("POST /v1/acquirer/callbacks accepts a callback sent without a signature he
     payload: callbackBody(transactionId, callbackId),
   });
 
-  assert.equal(res.statusCode, 200);
-  assert.deepEqual(res.json(), { received: true });
-  assert.equal(await noteCount(callbackId), "1");
+  assert.equal(res.statusCode, 401);
+  assert.equal(await noteCount(callbackId), "0");
+});
+
+// New (fix 1.8): an old genuine signature must be refused (replay).
+// جديد (إصلاح 1.8): توقيع حقيقي بس قديم لازم ينرفض.
+test("POST /v1/acquirer/callbacks rejects a stale (replayed) signature", async () => {
+  const transactionId = await createTransaction();
+  const callbackId = `acqcb_${randomUUID()}`;
+  const body = callbackBody(transactionId, callbackId);
+
+  const res = await app.inject({
+    method: "POST",
+    url: "/v1/acquirer/callbacks",
+    headers: { "acquirer-callback-signature": signatureHeader(body, ACQUIRER_SECRET, 1_757_930_000) },
+    payload: body,
+  });
+  assert.equal(res.statusCode, 401);
+  assert.equal(await noteCount(callbackId), "0");
 });
 
 test("POST /v1/acquirer/callbacks returns 404 for an unknown transaction id", async () => {

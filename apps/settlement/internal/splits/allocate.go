@@ -88,6 +88,7 @@ func PayoutSplitBatch(ctx context.Context, db *pgxpool.Pool, batchID uuid.UUID) 
 	}
 
 	var shares []ChildShare
+	var weights []ChildWeight
 	for rows.Next() {
 		var childID uuid.UUID
 		var weightBps int64
@@ -95,14 +96,26 @@ func PayoutSplitBatch(ctx context.Context, db *pgxpool.Pool, batchID uuid.UUID) 
 			rows.Close()
 			return SplitPayoutResult{}, err
 		}
-		share := money.ApplyRateFils(money.Fils(netPayout), weightBps)
-		shares = append(shares, ChildShare{ChildMerchantID: childID, WeightBps: weightBps, AllocatedFils: share})
+		// Fix 2.6: don't round each child on its own here; just collect the
+		// weights. The amounts are computed together below.
+		// إصلاح 2.6: ما نقرّب لكل فرع لحاله هني، بس نجمع النِّسَب.
+		// المبالغ تنحسب كلها مع بعض تحت.
+		shares = append(shares, ChildShare{ChildMerchantID: childID, WeightBps: weightBps})
+		weights = append(weights, ChildWeight{WeightBps: weightBps})
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
 		return SplitPayoutResult{}, err
 	}
 	rows.Close()
+
+	// Fix 2.6: split the WHOLE net payout so the shares add up to it exactly
+	// (see ChildShares in shares.go).
+	// إصلاح 2.6: نقسّم المبلغ الصافي كله، عشان مجموع الحصص يساويه بالضبط
+	// (شوفي ChildShares في shares.go).
+	for i, amount := range ChildShares(money.Fils(netPayout), weights) {
+		shares[i].AllocatedFils = amount
+	}
 
 	var totalAllocated money.Fils
 	for _, s := range shares {
@@ -134,8 +147,13 @@ func PayoutSplitBatch(ctx context.Context, db *pgxpool.Pool, batchID uuid.UUID) 
 	// Bring the parent's cached balance down by what the legs above actually
 	// debited from its merchant_payable account, same as PayoutBatch does
 	// for a non-split merchant.
-	// am: should pass netPayout here not totalAllocated, otherwise the cache drifts from the batch
-	if err := balances.ApplyPayout(ctx, tx, parentMerchantID, batchID, totalAllocated); err != nil {
+	// Fix 2.6: am was right. Use the batch's own netPayout, so the cached
+	// balance moves by exactly the batch figure. (Shares now sum to netPayout
+	// anyway, so the two are equal whenever netPayout > 0.)
+	// إصلاح 2.6: AM كانت صح. نستخدم netPayout حق الدفعة نفسها، عشان الرصيد
+	// يتحرك بنفس رقم الدفعة بالضبط. (الحصص الحين مجموعها = netPayout أصلاً.)
+	_ = totalAllocated
+	if err := balances.ApplyPayout(ctx, tx, parentMerchantID, batchID, money.Fils(netPayout)); err != nil {
 		return SplitPayoutResult{}, err
 	}
 

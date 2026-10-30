@@ -30,10 +30,21 @@ export async function getCurrentFeeScheduleForDisplay(
   merchantId: string,
 ): Promise<CurrentFeeScheduleDisplay | null> {
   const result = await pool.query<{ mdr_bps: number; effective_from: Date; created_at: Date }>(
+    // Fix 2.11: show the rate the merchant is ACTUALLY charged right now: the
+    // newest row already in effect (effective_from <= now), the same rule as
+    // feeSchedule.ts (capture) and fee_schedule.go (settlement). Ordering by
+    // created_at (when it was typed in) showed a backfilled correction for an
+    // OLD period, or a future-dated row, instead: 245 bps shown, 225 charged.
+    // MK's question above was right.
+    // إصلاح 2.11: نعرض النسبة اللي "تنخصم فعلاً" الحين: أحدث صف بدأ
+    // تطبيقه (effective_from <= now)، نفس قاعدة السحب والتسوية. الترتيب
+    // بـ created_at (متى انكتب) كان يعرض تصحيح لفترة قديمة أو نسبة مستقبلية:
+    // يعرض 245 والفعلي 225. سؤال MK فوق كان صح.
     `SELECT mdr_bps, effective_from, created_at
        FROM fee_schedules
       WHERE merchant_id = $1
-      ORDER BY created_at DESC
+        AND effective_from <= now()
+      ORDER BY effective_from DESC
       LIMIT 1`,
     [merchantId],
   );

@@ -13,6 +13,22 @@ test("an empty amount throws", () => {
   assert.throws(() => parseAdjustmentAmountFils(""), /could not parse amount/);
 });
 
+// Added (fix 2.1): BD amounts have 3 decimals (1 BD = 1000 fils, ADR-0001).
+// مضاف (إصلاح 2.1): الدينار 3 خانات (1 دينار = 1000 فلس).
+test("BD amounts parse to whole fils (three decimals)", () => {
+  assert.equal(parseAdjustmentAmountFils("4.75"), 4750);
+  assert.equal(parseAdjustmentAmountFils("4.750"), 4750);
+  assert.equal(parseAdjustmentAmountFils("4.755"), 4755);
+  assert.equal(parseAdjustmentAmountFils("10"), 10000);
+  assert.equal(parseAdjustmentAmountFils("-1.25"), -1250);
+});
+
+// More than 3 decimals must be rejected, never silently cut.
+// أكثر من 3 خانات لازم ينرفض، مو ينقص بدون ما أحد يدري.
+test("more than three decimals is rejected, not truncated", () => {
+  assert.throws(() => parseAdjustmentAmountFils("4.7555"), /could not parse amount/);
+});
+
 // ------------------------------------------------------------ csv splitting
 
 const MERCHANT_A = "11111111-1111-4111-8111-111111111111";

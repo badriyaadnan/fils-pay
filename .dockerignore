@@ -1,0 +1,11 @@
+# Files Docker must NOT copy into the image.
+# ملفات ما يبي Docker ينسخها داخل الصورة.
+#
+# Fix: without this, Windows node_modules and secrets would be copied in.
+# الإصلاح: بدونه كان بينسخ مكتبات الويندوز والأسرار داخل الصورة.
+**/node_modules
+**/dist
+.git
+**/.env
+ops/.env.*
+data

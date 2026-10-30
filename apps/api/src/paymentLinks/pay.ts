@@ -29,12 +29,17 @@ interface LinkStatusRow {
   expires_at: Date;
 }
 
-/** A pay request is judged against when the buyer pressed pay, so a
- * retry that lands after midnight is not penalised. */
-export function expiryReferenceTime(submittedAt?: string): Date {
-  if (!submittedAt) return new Date();
-  const parsed = new Date(submittedAt);
-  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+/** Expiry is always judged on the SERVER clock. */
+// Fix 1.9: before, the expiry check used "submittedAt" sent by the browser.
+// The buyer controls the browser, so they could send an old date and pay an
+// expired link (FP-187). Now we always use the server's own time. The
+// parameter stays (with "_") only so the code that calls it still compiles.
+// إصلاح 1.9: قبل، فحص الانتهاء يستخدم "submittedAt" اللي يرسله المتصفح.
+// والمتصفح بيد الزبون، فيقدر يرسل تاريخ قديم ويدفع على رابط منتهي.
+// الحين دايماً نستخدم وقت السيرفر. خلينا الـ parameter (مع "_") بس
+// عشان الكود اللي يناديه ما يخرب.
+export function expiryReferenceTime(_submittedAt?: string): Date {
+  return new Date();
 }
 
 /**

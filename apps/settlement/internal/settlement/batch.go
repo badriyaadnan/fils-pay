@@ -249,12 +249,47 @@ func CloseBatch(ctx context.Context, db *pgxpool.Pool, merchantID uuid.UUID, bus
 
 	for i, line := range lines {
 		truncated := TruncateToSchemeAmount(line.grossFils)
+		// Fix 2.4: `amount` (what the scheme file shows) must be exactly
+		// amount_fils at two decimals (ADR-0002). Before, it was
+		// float64(GROSS)/1000, and Postgres ROUNDED that to 2 decimals, so on
+		// many lines the scheme was told up to 5 fils MORE than amount_fils:
+		// "always over, never under". Now we send the truncated amount as an
+		// exact string.
+		// إصلاح 2.4: `amount` (اللي يطلع في ملف الـ scheme) لازم يساوي
+		// amount_fils بالضبط بخانتين (ADR-0002). قبل كان يرسل المبلغ الكامل
+		// كـ float، وPostgres يقرّبه لخانتين، فالـ scheme ينقال له لين 5 فلوس
+		// "أكثر" في سطور كثيرة: "دايماً أعلى، أبداً أقل". الحين نرسل المبلغ
+		// المقصوص كنص دقيق.
 		_, err = tx.Exec(ctx, `
 			INSERT INTO scheme_export_lines (settlement_batch_id, transaction_id, amount_fils, amount, line_sequence)
-			VALUES ($1, $2, $3, $4, $5)
-		`, batchID, line.transactionID, int64(truncated), SchemeAmountBD(line.grossFils), i+1)
+			VALUES ($1, $2, $3, $4::numeric, $5)
+		`, batchID, line.transactionID, int64(truncated), SchemeAmountBD(truncated), i+1)
 		if err != nil {
 			return BatchResult{}, fmt.Errorf("settlement: CloseBatch: insert scheme export line: %w", err)
+		}
+
+		// Fix 2.5: ADR-0002 option A. The scheme file has 2 decimals, so the
+		// last 0-9 fils of each line never reach the scheme. Those fils must be
+		// recorded in the "scheme_rounding_residue" suspense account, per line,
+		// in the same transaction. The docs say this was implemented in March,
+		// but it never was, so the ledger, the scheme statement and the
+		// settlement report could never match.
+		// إصلاح 2.5: ملف الـ scheme فيه خانتين بس، فآخر 0-9 فلوس من كل سطر ما
+		// توصل للـ scheme. لازم تنسجل في حساب معلّق اسمه
+		// "scheme_rounding_residue"، لكل سطر، بنفس العملية. الوثائق تقول إنها
+		// انسوت في مارس، بس عمرها ما انسوت، فالدفتر وكشف الـ scheme والتقرير
+		// ما كانوا يتطابقون.
+		if residue := line.grossFils - truncated; residue > 0 {
+			_, err = tx.Exec(ctx, `
+				INSERT INTO ledger_entries
+				  (entry_group_id, merchant_id, transaction_id, settlement_batch_id, account_id, direction, amount_fils, occurred_at, description)
+				VALUES
+				  ($1, $2, $3, $4, 'card_scheme_clearing',    'credit', $5, now(), 'scheme rounding residue at export'),
+				  ($1, $2, $3, $4, 'scheme_rounding_residue', 'debit',  $5, now(), 'scheme rounding residue at export')
+			`, uuid.New(), merchantID, line.transactionID, batchID, int64(residue))
+			if err != nil {
+				return BatchResult{}, fmt.Errorf("settlement: CloseBatch: post scheme residue: %w", err)
+			}
 		}
 	}
 

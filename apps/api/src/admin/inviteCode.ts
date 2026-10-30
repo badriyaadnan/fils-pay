@@ -1,15 +1,16 @@
 import type { Pool } from "pg";
+// Fix 1.2: use the shared secure generator instead of Math.random().
+// إصلاح 1.2: نستخدم المولّد الآمن المشترك بدل Math.random().
+import { randomFromAlphabet } from "../lib/random.js";
 import { BadRequestError } from "../lib/errors.js";
 
 const INVITE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 /** Generates a short, human-readable invite code for admin user onboarding. */
 export function generateInviteCode(length: number = 8): string {
-  let code = "";
-  for (let i = 0; i < length; i++) {
-    code += INVITE_ALPHABET[Math.floor(Math.random() * INVITE_ALPHABET.length)];
-  }
-  return code;
+  // An invite code lets someone become an admin, so it must not be guessable.
+  // كود الدعوة يخلي الشخص يصير أدمن، فلازم ما ينخمّن.
+  return randomFromAlphabet(INVITE_ALPHABET, length);
 }
 
 export async function createAdminInvite(

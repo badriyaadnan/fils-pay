@@ -1,11 +1,20 @@
-import { toFils, type Fils } from "@filspay/money";
+// Fix 2.1: use parseBhdToFils (3 decimals, 1 BD = 1000 fils) instead of
+// toFils + parseDecimalMinor (which assumed 2 decimals, "cents").
+// إصلاح 2.1: نستخدم parseBhdToFils (3 خانات، 1 دينار = 1000 فلس) بدل
+// toFils + parseDecimalMinor (اللي يحسبها خانتين "cents").
+import { parseBhdToFils, type Fils } from "@filspay/money";
 import { BadRequestError } from "../lib/errors.js";
-import { parseDecimalMinor } from "../lib/decimal.js";
 
-/** Parses one CSV row's amount column into fils. */
+/** Parses one CSV row's BD amount column into fils. */
+// Before: "4.75" became 475 fils (0.475 BD), 10x too small, and "4.755"
+// was silently cut to 475. Now: "4.75" = 4750, "4.755" = 4755, and more
+// than 3 decimals (e.g. "4.7555") is rejected instead of cut.
+// قبل: "4.75" تصير 475 فلس (0.475 دينار)، أصغر 10 مرات، و"4.755" تنقص
+// بدون ما أحد يدري. الحين: "4.75" = 4750، و"4.755" = 4755، وأكثر من 3
+// خانات (مثل "4.7555") ينرفض بدل ما ينقص.
 export function parseAdjustmentAmountFils(raw: string): Fils {
   try {
-    return toFils(parseDecimalMinor(raw), { allowNegative: true });
+    return parseBhdToFils(raw);
   } catch {
     throw new BadRequestError("invalid_amount", `could not parse amount "${raw}"`);
   }

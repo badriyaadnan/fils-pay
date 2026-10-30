@@ -105,10 +105,25 @@ func RecalculateMDR(ctx context.Context, db *pgxpool.Pool, merchantID uuid.UUID,
 		if err := postMdrAdjustment(ctx, tx, merchantID, b.id, diff); err != nil {
 			return RecalcResult{}, err
 		}
-		if _, err := tx.Exec(ctx, `
-			UPDATE settlement_batches SET fee_fils = $2, net_payout_fils = $3 WHERE id = $1
-		`, b.id, int64(newFee), int64(newNetPayout)); err != nil {
-			return RecalcResult{}, fmt.Errorf("settlement: RecalculateMDR: update batch %s: %w", b.id, err)
+		// Fix 2.7: a PAID batch is a record of money that already left the
+		// platform (the bank transfer, the statement and the scheme file were
+		// made from it), so its numbers must NEVER change. Before, every
+		// non-open batch was rewritten, paid ones included ("MDR recalculation
+		// changed batches that were already paid out"). Now only a
+		// closed-but-unpaid batch is re-priced, so it gets paid at the
+		// corrected figure. For a paid batch, the correction exists only as
+		// the new ledger adjustment posted above (dated today).
+		// إصلاح 2.7: الدفعة "المدفوعة" سجل لفلوس طلعت خلاص (تحويل البنك وكشف
+		// الحساب وملف الـ scheme انسوت منها)، فأرقامها لازم ما تتغير أبداً.
+		// قبل كان يعدّل كل دفعة مو مفتوحة، حتى المدفوعة. الحين نعدّل بس الدفعة
+		// "المقفلة وما اندفعت"، عشان تندفع بالرقم الصح. والمدفوعة، التصحيح
+		// يكون بس قيد جديد في الدفتر (فوق، بتاريخ اليوم).
+		if b.status == "closed" {
+			if _, err := tx.Exec(ctx, `
+				UPDATE settlement_batches SET fee_fils = $2, net_payout_fils = $3 WHERE id = $1 AND status = 'closed'
+			`, b.id, int64(newFee), int64(newNetPayout)); err != nil {
+				return RecalcResult{}, fmt.Errorf("settlement: RecalculateMDR: update batch %s: %w", b.id, err)
+			}
 		}
 		// A fee increase (diff > 0) reduces net payout owed, so the cache
 		// moves by -diff — the same signed-delta idiom ApplyBatchClose

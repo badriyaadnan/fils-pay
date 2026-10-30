@@ -28,6 +28,19 @@ export async function rotateApiKeyAsAdmin(
       throw new ConflictError("api_key_already_revoked");
     }
 
+    // Fix 1.10: rotation must actually KILL the old key. Before, nothing set
+    // revoked_at, so a "rotated" key (usually rotated because it leaked) kept
+    // working forever. We do it in the same transaction as issuing the new
+    // key, so either both happen or neither does.
+    // إصلاح 1.10: التدوير لازم "يموّت" المفتاح القديم فعلاً. قبل، ما أحد يحط
+    // revoked_at، فالمفتاح القديم (اللي غالباً تسرّب) يظل شغال للأبد.
+    // نسويها بنفس الـ transaction مع إصدار المفتاح الجديد، فيا يصيرون
+    // الاثنين، يا ولا واحد.
+    await client.query(
+      `UPDATE api_keys SET revoked_at = now(), revoked_reason = 'rotated' WHERE id = $1`,
+      [input.apiKeyId],
+    );
+
     const issued = await issueApiKeyInTx(client, config, {
       merchantId: input.merchantId,
       createdByAdminUserId: input.adminUserId,

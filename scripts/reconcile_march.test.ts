@@ -10,10 +10,13 @@ test("computeResidueFils returns the amount lost to 2dp quantization", () => {
   assert.equal(computeResidueFils(0), 0);
 });
 
-test("monthBounds for March 2026 spans 31 days", () => {
+// Changed (fix 2.14): the month is the BAHRAIN calendar month (UTC+3),
+// matching the business-day batches it is reconciled against, not the UTC month.
+// تغيّر (إصلاح 2.14): الشهر = شهر البحرين، يبدأ 21:00 UTC يوم 28 فبراير.
+test("monthBounds for March 2026 is the Bahrain month (31 days, starting 21:00 UTC on 28 Feb)", () => {
   const { start, end } = monthBounds(2026, 3);
   const days = (end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24);
   assert.equal(days, 31);
-  assert.equal(start.getUTCMonth(), 2);
-  assert.equal(end.getUTCMonth(), 3);
+  assert.equal(start.toISOString(), "2026-02-28T21:00:00.000Z");
+  assert.equal(end.toISOString(), "2026-03-31T21:00:00.000Z");
 });

@@ -24,10 +24,20 @@ func TruncateToSchemeAmount(grossFils money.Fils) money.Fils {
 	return (grossFils / 10) * 10
 }
 
-// SchemeAmountBD converts a transaction's gross fils to the BD value stored
-// in scheme_export_lines.amount (numeric(10,2)).
-func SchemeAmountBD(grossFils money.Fils) float64 {
-	return float64(grossFils) / 1000.0
+// SchemeAmountBD formats an already-truncated (multiple of 10) fils amount
+// as the exact two-decimal BD string stored in scheme_export_lines.amount.
+//
+// Fix 2.4: before, it returned float64(gross)/1000 (a float, from the
+// UNtruncated amount). Postgres then ROUNDED it to 2 decimals, e.g.
+// 12.345 BD became 12.35 while amount_fils said 12.340, so the scheme was
+// always told more. Now: integer formatting of the truncated amount, never a
+// float (ADR-0001/0002).
+// إصلاح 2.4: قبل كان يرجّع float من المبلغ الكامل (مو المقصوص)، وPostgres
+// يقرّبه لخانتين. مثلاً 12.345 تصير 12.35 بينما amount_fils = 12.340،
+// فالـ scheme دايماً ينقال له أكثر. الحين نحوّل المبلغ المقصوص لنص بأرقام
+// صحيحة، بدون float أبداً.
+func SchemeAmountBD(truncatedFils money.Fils) string {
+	return formatFilsAsTwoDecimalString(TruncateToSchemeAmount(truncatedFils))
 }
 
 // buildBatchClosedPayload builds the settlement.batch_closed outbox

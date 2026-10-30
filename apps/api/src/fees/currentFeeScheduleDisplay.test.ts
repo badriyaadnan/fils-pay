@@ -68,8 +68,12 @@ test("returns the most recently entered schedule when rows were entered as they 
   assert.equal(current?.createdAt.toISOString(), "2026-07-01T00:00:00.000Z");
 });
 
-// am: this test is the reason i asked above. it asserts the backfilled row wins
-test("returns the most recently entered schedule even when an older period was backfilled later", async () => {
+// Changed (fix 2.11): this test asserted the BUG: that a backfilled
+// correction to an old period (245) is shown as "current" while billing uses
+// 225. The display must show the rate actually charged now (the newest row in effect).
+// تغيّر (إصلاح 2.11): الاختبار القديم كان يثبّت الخطأ (يعرض 245 والفعلي
+// 225). الحين يتأكد إنه يعرض النسبة اللي تنخصم فعلاً.
+test("shows the rate in effect now even when an older period was backfilled later", async () => {
   const merchantId = await insertMerchant(250);
   // A renegotiation entered on the day it took effect, then a backdated
   // correction to an earlier period entered two weeks afterwards.
@@ -77,7 +81,17 @@ test("returns the most recently entered schedule even when an older period was b
   await insertSchedule(merchantId, 245, "2026-03-01T00:00:00Z", "2026-08-15T00:00:00Z");
 
   const current = await getCurrentFeeScheduleForDisplay(pool, merchantId);
-  assert.equal(current?.mdrBps, 245);
-  assert.equal(current?.effectiveFrom.toISOString(), "2026-03-01T00:00:00.000Z");
-  assert.equal(current?.createdAt.toISOString(), "2026-08-15T00:00:00.000Z");
+  assert.equal(current?.mdrBps, 225);
+  assert.equal(current?.effectiveFrom.toISOString(), "2026-08-01T00:00:00.000Z");
+});
+
+// New (fix 2.11): a rate that starts in the future isn't "current" yet.
+// جديد (إصلاح 2.11): نسبة تبدأ في المستقبل مو "الحالية".
+test("a future-dated schedule is not shown as current", async () => {
+  const merchantId = await insertMerchant(250);
+  await insertSchedule(merchantId, 200, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z");
+  await insertSchedule(merchantId, 150, "2099-01-01T00:00:00Z", "2026-02-01T00:00:00Z");
+
+  const current = await getCurrentFeeScheduleForDisplay(pool, merchantId);
+  assert.equal(current?.mdrBps, 200);
 });

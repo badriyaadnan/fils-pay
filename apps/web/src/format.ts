@@ -6,10 +6,15 @@ import { formatBhd, toFils } from "@filspay/money";
  * so there is exactly one answer to "how is a BHD amount shown" across both
  * halves of this app. Never `/1000`, never `toFixed`.
  */
-// FH: toFils without allowNegative throws on a negative — refund events / negative gaps crash the page?
-// MK: amounts are never negative in the dashboard. ignore
+// Fix 2.17: negative amounts are real. Refund events carry a negative amount
+// (migration 0044) and reconciliation gaps can be negative. toFils() without
+// allowNegative THREW on them, so the transaction page crashed (blank page)
+// after any refund. MK's "amounts are never negative" was wrong.
+// إصلاح 2.17: الأرقام السالبة موجودة فعلاً. الاسترجاع ينسجل بالسالب، وفرق
+// المطابقة ممكن يكون سالب. toFils() بدون allowNegative كان يرمي خطأ، فصفحة
+// العملية تطيح (تصير بيضا) بعد أي استرجاع. كلام MK "ما فيه سالب" غلط.
 export function bhd(amountFils: number): string {
-  return `${formatBhd(toFils(amountFils))} BHD`;
+  return `${formatBhd(toFils(amountFils, { allowNegative: true }))} BHD`;
 }
 
 /** `—` for a null/absent value, so an empty table cell is visibly empty
@@ -32,6 +37,10 @@ export function dateTime(iso: string | null | undefined): string {
  */
 // YA: UTC day boundary, NOT Bahrain. filters are 3h off vs settlement days. known.
 // fixed, uses bahrain time now — am
+// Note: am's line above is NOT true, this still uses the UTC day (YA is right).
+// Known limitation, documented in FIXES.md.
+// ملاحظة: كلام AM فوق مو صحيح، للحين يستخدم يوم UTC (YA كلامها صح).
+// قيد معروف، مكتوب في التوثيق.
 export function dayStartIso(dateValue: string): string | undefined {
   return dateValue ? `${dateValue}T00:00:00.000Z` : undefined;
 }

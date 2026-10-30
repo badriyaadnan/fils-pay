@@ -26,5 +26,14 @@ export function buildDelete(
   filters: Record<string, unknown>,
 ): { text: string; values: unknown[] } {
   const { clause, values } = buildWhere(filters);
+  // Fix 2.13 (safety net): buildWhere silently drops empty arrays and
+  // nulls, so an empty id list used to yield `DELETE FROM <table>` (the
+  // WHOLE table). Now we refuse to build a DELETE with no WHERE at all.
+  // إصلاح 2.13 (حماية): buildWhere يتجاهل القوائم الفاضية، فقائمة أرقام
+  // فاضية كانت تطلع `DELETE FROM <table>` (يمسح الجدول كله!). الحين نرفض
+  // نبني أمر DELETE بدون شرط.
+  if (clause === "") {
+    throw new Error(`buildDelete: refusing to build DELETE without a WHERE clause on ${table}`);
+  }
   return { text: `DELETE FROM ${table} ${clause}`.trim(), values };
 }

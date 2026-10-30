@@ -10,10 +10,20 @@ export interface TransactionsExportFilters {
 }
 
 function csvEscape(value: string): string {
-  if (value.includes(",") || value.includes('"') || value.includes("\n")) {
-    return `"${value.replace(/"/g, '""')}"`;
+  // Fix 1.12 (CSV injection): in Excel/Sheets, a cell that starts with
+  // = + - @ (or tab / carriage return) is run as a FORMULA. The reference
+  // text comes from outside, so an attacker could make the file run a formula
+  // when the accountant opens it. We put a ' in front so it shows as plain text.
+  // إصلاح 1.12 (حقن CSV): في Excel، أي خانة تبدا بـ = + - @ (أو tab أو
+  // سطر جديد) تنحسب كمعادلة. نص الـ reference يجي من برا، فالمهاجم يقدر
+  // يخلي الملف يشغّل معادلة لما المحاسب يفتحه. نحط ' قدامه عشان يطلع نص عادي.
+  let v = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+  // Also wrap in quotes if it contains \r (before only , " and \n were checked).
+  // نحطه بين علامتين تنصيص إذا فيه \r بعد (قبل كان يشيّك , " و \n بس).
+  if (v.includes(",") || v.includes('"') || v.includes("\n") || v.includes("\r")) {
+    v = `"${v.replace(/"/g, '""')}"`;
   }
-  return value;
+  return v;
 }
 
 function toCsvRow(row: TransactionRow): string {

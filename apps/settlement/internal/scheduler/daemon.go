@@ -77,8 +77,19 @@ func runIfDue(ctx context.Context, db *pgxpool.Pool, runDelayMinutes int) {
 	// let last-minute transactions settle.
 	// MK: UTC here is fine, BusinessDayWindow converts to Bahrain.
 	// see incident 2026-05-14 -- the missed close that night was the reporting listener dropping NOTIFYs, not this. -- FH
+	// Fix 2.8: this passed the UTC instant straight to BusinessDayWindow,
+	// which reads only the calendar DATE, so it got the UTC date. Between
+	// 00:00 and 03:00 Bahrain time the UTC date is still "yesterday", so the
+	// close of a business day wasn't due until 03:00 + delay local time
+	// (the "~03:15 close" am saw in the logs). Now we work out today's date
+	// in Asia/Bahrain first, with BusinessDateOf.
+	// إصلاح 2.8: كان يرسل الوقت بتوقيت UTC مباشرة لـ BusinessDayWindow، وهذي
+	// تاخذ "التاريخ" بس، فتاخذ تاريخ UTC. من 12 لين 3 الفجر بتوقيت البحرين،
+	// تاريخ UTC للحين "أمس"، فإقفال اليوم ما يصير إلا الساعة 3:15 بدل
+	// 12:15 (اللي لاحظته AM في السجلات). الحين نحسب تاريخ اليوم بتوقيت
+	// البحرين أول بـ BusinessDateOf.
 	now := time.Now().UTC()
-	todayStart, _ := settlement.BusinessDayWindow(now)
+	todayStart, _ := settlement.BusinessDayWindow(settlement.BusinessDateOf(now))
 	dueAt := todayStart.Add(time.Duration(runDelayMinutes) * time.Minute)
 	if now.Before(dueAt) {
 		// The grace period after today's Bahrain midnight hasn't elapsed

@@ -9,7 +9,6 @@ import {
   promoteSession,
   revokeSession,
 } from "../auth/sessions.js";
-import { findOtpRecipient } from "../auth/users.js";
 import { withTransaction } from "../db/withTransaction.js";
 import { BadRequestError, GoneError, TooManyRequestsError, UnauthorizedError } from "../lib/errors.js";
 
@@ -75,7 +74,14 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       throw new UnauthorizedError("invalid_credentials");
     }
 
-    const recipient = await findOtpRecipient(app.db, email) ?? user;
+    // Fix 1.4: send the OTP to exactly the user whose password was just checked.
+    // Before, it looked the user up again by EMAIL ONLY. The same email can
+    // exist under several merchants, so the code (and the session) could end
+    // up belonging to a different merchant's account.
+    // إصلاح 1.4: نرسل الكود لنفس المستخدم اللي تأكدنا من الباسوورد حقه.
+    // قبل كان يدوّر عليه مرة ثانية بالإيميل بس، ونفس الإيميل ممكن يكون عند
+    // أكثر من تاجر، فالكود (والجلسة) ممكن يروحون لحساب تاجر ثاني.
+    const recipient = user;
 
     const { code, expiresAt, rawToken } = await withTransaction(app.db, async (client) => {
       const challenge = await issueChallenge(client, {
@@ -153,18 +159,32 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         throw new GoneError("otp_expired");
       }
 
-      // am: check-then-increment is fine, max_attempts=5 so worst case is 5 guesses
-      // MK: 5 guesses per parallel batch? if i fire 50 at once they all read attempt_count=0
-      if (challenge.attempt_count >= challenge.max_attempts) {
+      // Fix 1.3: spend one attempt FIRST, in a single atomic UPDATE, and only
+      // then compare the code. Before, it read attempt_count, compared, and
+      // increased it later. 50 parallel requests all read attempt_count = 0,
+      // so each got a free guess (50 guesses instead of 5).
+      // Now the database itself refuses once attempt_count reaches max_attempts.
+      // إصلاح 1.3: نحسب المحاولة أول (بأمر UPDATE واحد ما ينقسم)، وبعدين
+      // نقارن الكود. قبل كان يقرا العداد، ويقارن، وبعدين يزيده. لو انرسل
+      // 50 طلب بنفس اللحظة، كلهم يقرون 0 ويجربون (50 تخمين بدل 5).
+      // الحين قاعدة البيانات نفسها ترفض لما يوصل العداد للحد.
+      const spent = await app.db.query(
+        `UPDATE otp_challenges SET attempt_count = attempt_count + 1
+          WHERE id = $1 AND attempt_count < max_attempts AND consumed_at IS NULL
+          RETURNING attempt_count`,
+        [challenge.id],
+      );
+      if (spent.rowCount === 0) {
+        // No attempts left: kill the pending session.
+        // ما باقي محاولات: نلغي الجلسة المؤقتة.
         await revokeSession(app.db, pending.sessionId);
         throw new TooManyRequestsError("too_many_attempts");
       }
 
       const matches = verifyOtpCode(code, challenge.code_salt, challenge.code_hash);
       if (!matches) {
-        await app.db.query(`UPDATE otp_challenges SET attempt_count = attempt_count + 1 WHERE id = $1`, [
-          challenge.id,
-        ]);
+        // The attempt was already counted above.
+        // المحاولة انحسبت فوق خلاص.
         throw new UnauthorizedError("invalid_code");
       }
 
@@ -182,6 +202,20 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       if (!merchantUserResult) {
         throw new Error("otp/verify: merchant_users row disappeared mid-transaction");
       }
+
+      // Fix 3.6: re-issue the cookie with the full session lifetime (12h), the
+      // same way the admin login does. Before, the browser kept the short
+      // pending-session cookie (10 min), so merchants got logged out after 10 min.
+      // إصلاح 3.6: نرجع نحط الكوكي بعمر الجلسة الكامل (12 ساعة) مثل دخول
+      // الأدمن. قبل، المتصفح يحتفظ بكوكي الجلسة المؤقتة (10 دقايق)، فالتاجر
+      // يطلع من حسابه بعد 10 دقايق.
+      reply.setCookie(app.config.cookieName, rawToken, {
+        httpOnly: true,
+        path: "/",
+        sameSite: "lax",
+        secure: app.config.cookieSecure,
+        maxAge: app.config.sessionTtlHours * 3_600,
+      });
 
       reply.code(200).send({
         authenticated: true,

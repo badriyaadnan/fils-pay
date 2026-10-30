@@ -1,0 +1,32 @@
+# Image for apps/api, apps/reporting and the one-off migrate/seed jobs.
+# صورة Docker لخدمة الـ API وخدمة التقارير ومهام migrate وseed.
+#
+# Build context is the repo root (see docker-compose.yml: context: ..).
+# البناء يبدأ من المجلد الرئيسي للمشروع (شوفي context في docker-compose.yml).
+#
+# Fix: this file was missing, so `docker compose up` failed immediately.
+# الإصلاح: هذا الملف كان ناقص، فالتشغيل كان يفشل من أول ثانية.
+FROM node:20-bookworm
+
+WORKDIR /app
+
+# Install dependencies first so this layer is cached between code changes.
+# نثبّت المكتبات أول، عشان Docker يحفظها وما يعيد تحميلها كل مرة نعدل الكود.
+#
+# Every workspace's package.json must be present for `npm ci` to work.
+# لازم كل ملفات package.json موجودة عشان أمر npm ci يشتغل صح.
+COPY package.json package-lock.json ./
+COPY apps/api/package.json apps/api/package.json
+COPY apps/reporting/package.json apps/reporting/package.json
+COPY apps/web/package.json apps/web/package.json
+COPY apps/admin/package.json apps/admin/package.json
+COPY packages/money/package.json packages/money/package.json
+COPY packages/events/package.json packages/events/package.json
+RUN npm ci --no-audit --no-fund
+
+# Copy the rest of the code.
+# ننسخ باقي الكود.
+COPY . .
+
+ENV NODE_ENV=production
+EXPOSE 3000

@@ -82,10 +82,19 @@ export type ImpersonationMerchantRole = "owner" | "finance" | "support";
 type AdminUserRole = "support" | "finance" | "super_admin";
 
 /** Maps the admin's role to the merchant-plane role used during impersonation. */
+// Fix 1.6: impersonation ("view as merchant") must be VIEW-ONLY, as the docs
+// and the comment below ("Always support") say. Before, super_admin became
+// "owner" and finance became "finance", so an admin could create links, keys
+// and refunds that the audit log then blamed on the merchant itself.
+// Now every admin role maps to "support", the lowest merchant role.
+// إصلاح 1.6: الانتحال ("شوف كأنك التاجر") لازم يكون للقراءة بس، مثل ما تقول
+// الوثائق والتعليق تحت ("Always support"). قبل، super_admin يصير "owner"
+// وfinance يصير "finance"، فالأدمن يقدر يسوي روابط ومفاتيح واسترجاعات،
+// والسجل يحسبها على التاجر نفسه. الحين كل الأدوار تصير "support"، أقل دور.
 const MERCHANT_ROLE_FOR_ADMIN_ROLE: Record<AdminUserRole, ImpersonationMerchantRole> = {
   support: "support",
-  finance: "finance",
-  super_admin: "owner",
+  finance: "support",
+  super_admin: "support",
 };
 
 /** @property merchantRole Always "support" (ARCH §8): a grant is view-only. */

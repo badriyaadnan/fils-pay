@@ -104,6 +104,9 @@ export async function paymentLinkMerchantRoutes(app: FastifyInstance): Promise<v
       assertOwnMerchant(request);
       const result = await cancelPaymentLink(app.db, {
         id: request.params.id,
+        // Fix 1.5: pass the merchant too, so cancel only touches this merchant's links.
+        // إصلاح 1.5: نرسل رقم التاجر بعد، عشان الإلغاء يلمس روابط هالتاجر بس.
+        merchantId: request.params.merchantId,
       });
       if (result.outcome === "canceled") {
         reply.code(204).send();

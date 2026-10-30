@@ -1,10 +1,11 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { toFils } from "@filspay/money";
 import { requireApiKey } from "../apiKeys/verify.js";
-import { requireMerchantAuth, requireMerchantWriterActor } from "../auth/requireMerchantAuth.js";
+// Fix 1.6: also import requireMerchantRole, to block "support" from moving money.
+// إصلاح 1.6: نستورد requireMerchantRole بعد، عشان نمنع "support" من تحريك الفلوس.
+import { requireMerchantAuth, requireMerchantRole, requireMerchantWriterActor } from "../auth/requireMerchantAuth.js";
 import { authorizeTransaction, type AuthorizeInput } from "../payments/authorize.js";
 import { captureTransaction } from "../payments/capture.js";
-import { applyCaptureDiscountAdjustment } from "../payments/discountAdjustment.js";
 import { voidTransaction } from "../payments/void.js";
 import { buildTransactionsExportCsv } from "../transactions/exportCsv.js";
 import { getTransactionById, listTransactions } from "../transactions/query.js";
@@ -92,7 +93,13 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
     // MK: impersonation is read-only, enforced in requireMerchantAuth. fine
     // MK: confirmed — ADMIN.md says grants are support-level read only
     "/:id/capture",
-    { preHandler: requireMerchantAuth },
+    // Fix 1.6: capture moves money, so only owner/finance may do it. A "support"
+    // user (and an admin impersonating, who is always "support") gets 403.
+    // The comments above say "impersonation is read-only": that was never enforced.
+    // إصلاح 1.6: السحب يحرك فلوس، فبس owner/finance يقدرون. مستخدم "support"
+    // (والأدمن اللي ينتحل، دايماً "support") ياخذ 403. التعليقات فوق تقول
+    // "الانتحال قراءة بس"، بس هذا عمره ما انطبق في الكود.
+    { preHandler: [requireMerchantAuth, requireMerchantRole("owner", "finance")] },
     async (request, reply) => {
       const idempotencyKey = getIdempotencyKey(request);
       const { amountFils } = request.body ?? {};
@@ -104,23 +111,23 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
         idempotencyKey,
         actor: requireMerchantWriterActor(request.merchantAuth!),
       });
-      // discount applied after capture commits, separate txn. on a replayed 200 this runs again
-      // but the count guard makes it a no-op — MK 2026-06
-      // am: and if this throws, the capture is committed but the discount never lands? retry = replay = ...
-      if (result.statusCode === 200) {
-        await applyCaptureDiscountAdjustment(app.db, {
-          merchantId: request.merchantAuth!.merchantId,
-          transactionId: request.params.id,
-        });
-      }
+      // Fix 2.12: the negotiated discount is now part of the fee computed
+      // INSIDE captureTransaction's own transaction (same formula as
+      // settlement), so there is no separate post-capture adjustment here.
+      // (am's worry was right: if that separate step failed, the capture was
+      // committed but the discount never landed.)
+      // إصلاح 2.12: الخصم صار داخل حساب الرسوم في captureTransaction نفسها
+      // (نفس معادلة التسوية)، فما نحتاج خطوة خصم منفصلة هني. (AM كانت صح:
+      // لو الخطوة المنفصلة فشلت، السحب يصير بس الخصم ما يوصل أبداً.)
       reply.code(result.statusCode).send(result.body);
     },
   );
 
   app.post<{ Params: TransactionIdParams }>(
-    // TODO(FH): role check? finance role users shouldn't void. ask MK
     "/:id/void",
-    { preHandler: requireMerchantAuth },
+    // Fix 1.6: void also moves money (releases the hold), so same rule as capture.
+    // إصلاح 1.6: الإلغاء يحرك فلوس بعد (يفك الحجز)، فنفس شرط السحب.
+    { preHandler: [requireMerchantAuth, requireMerchantRole("owner", "finance")] },
     async (request, reply) => {
       const result = await voidTransaction(app.db, {
         transactionId: request.params.id,

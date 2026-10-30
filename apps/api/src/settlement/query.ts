@@ -300,13 +300,26 @@ export async function getReconciliationReport(
           AND status IN ('closed', 'paid')`,
       [input.merchantId, input.from, input.to],
     ),
-    pool.query<{ amount_fils: string | number }>(
-      `SELECT te.amount_fils
+    // Pending = what is owed but not yet in a batch: unbatched captures net
+    // of the fee ACTUALLY charged at capture (recorded on the event), minus
+    // unbatched refunds net of the fee they reversed (FP-212).
+    // Fix 2.16: read the real fee from the event (metadata.feeFils), and
+    // include unbatched refunds (needed once refunds exist, 4.x).
+    // إصلاح 2.16: ناخذ الرسوم الحقيقية من الحدث نفسه (metadata.feeFils)،
+    // ونحسب الاسترجاعات اللي ما دخلت دفعة (نحتاجها لما نبني الاسترجاع).
+    pool.query<{ amount_fils: string | number; fee_fils: string | number | null }>(
+      `SELECT te.amount_fils, (te.metadata->>'feeFils')::bigint AS fee_fils
          FROM transaction_events te
          JOIN transactions t ON t.id = te.transaction_id
         WHERE t.merchant_id = $1 AND te.event_type IN ('captured', 'partially_captured')
           AND te.settlement_batch_id IS NULL
-          AND te.occurred_at >= $2 AND te.occurred_at < $3`,
+          AND te.occurred_at >= $2 AND te.occurred_at < $3
+       UNION ALL
+       SELECT -(r.amount_fils - r.fee_reversed_fils), 0::bigint
+         FROM refunds r
+        WHERE r.merchant_id = $1 AND r.status = 'succeeded'
+          AND r.settlement_batch_id IS NULL
+          AND r.occurred_at >= $2 AND r.occurred_at < $3`,
       [input.merchantId, windowStart, windowEnd],
     ),
     pool.query<{ mdr_bps: number; negotiated_discount_bps: number }>(
@@ -321,10 +334,20 @@ export async function getReconciliationReport(
   const mdrBps = merchant?.mdr_bps ?? 0;
   const discountBps = merchant?.negotiated_discount_bps ?? 0;
 
+  // Fix 2.16: the old code re-ESTIMATED each pending fee from
+  // merchants.mdr_bps, ignoring the effective-dated schedule and the volume
+  // tier (MK's "0046 trigger" above does not exist), so the report showed
+  // fake gaps that were only estimation error. Use the fee actually recorded.
+  // إصلاح 2.16: الكود القديم كان "يخمّن" الرسوم من mdr_bps، ويتجاهل جدول
+  // الرسوم والخصم الكبير (والـ trigger اللي يقول عنه MK فوق "ما له وجود")،
+  // فالتقرير يطلع فروقات وهمية. الحين نستخدم الرسوم اللي انخصمت فعلاً.
   let pendingUnbatchedFils = 0;
   for (const row of pendingResult.rows) {
     const amountFils = Number(row.amount_fils);
-    const feeFils = estimateFeeFils(amountFils, mdrBps, discountBps);
+    const feeFils =
+      row.fee_fils === null || row.fee_fils === undefined
+        ? estimateFeeFils(amountFils, mdrBps, discountBps)
+        : Number(row.fee_fils);
     pendingUnbatchedFils += amountFils - feeFils;
   }
 
@@ -364,17 +387,20 @@ export async function getSettlementSummary(
   const windowEnd = bahrainLocalMidnightUtc(input.to);
 
   const result = await pool.query<SettlementSummaryRow>(
-    `WITH captured AS (
-       SELECT t.id, t.captured_fils
-         FROM transactions t
-         JOIN transaction_events te ON te.transaction_id = t.id
-        WHERE t.merchant_id = $1
-          AND te.event_type IN ('captured', 'partially_captured')
-          AND te.occurred_at >= $2 AND te.occurred_at < $3
-     )
-     SELECT COUNT(DISTINCT id) AS transaction_count,
-            COALESCE(SUM(captured_fils), 0) AS total_captured_fils
-       FROM captured`,
+    // Fix 2.15: sum each capture EVENT's own amount. Summing
+    // transactions.captured_fils (a running TOTAL) once per joined event row
+    // double-counted every transaction captured in more than one step.
+    // Example: 60 + 40 captured in 2 steps → total 100 counted twice = 200.
+    // إصلاح 2.15: نجمع مبلغ كل "حدث سحب" لحاله. القديم كان يجمع
+    // captured_fils (وهو المجموع الكلي) مرة لكل حدث، فالعملية اللي انسحبت
+    // على دفعتين تنحسب مرتين. مثال: 60 + 40 = 100، تنحسب مرتين = 200!
+    `SELECT COUNT(DISTINCT t.id) AS transaction_count,
+            COALESCE(SUM(te.amount_fils), 0) AS total_captured_fils
+       FROM transactions t
+       JOIN transaction_events te ON te.transaction_id = t.id
+      WHERE t.merchant_id = $1
+        AND te.event_type IN ('captured', 'partially_captured')
+        AND te.occurred_at >= $2 AND te.occurred_at < $3`,
     [input.merchantId, windowStart, windowEnd],
   );
 

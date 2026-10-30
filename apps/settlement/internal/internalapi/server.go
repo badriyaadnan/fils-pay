@@ -265,7 +265,18 @@ func handleRunBatch(pool *pgxpool.Pool) http.Handler {
 // action. Takes no body; any body sent is ignored.
 func handleRebuildBalances(pool *pgxpool.Pool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		diffs, err := ledger.RefreshBalanceCache(r.Context(), pool)
+		// Fix 2.3 (FP-203): before, this called RefreshBalanceCache, which reads
+		// the merchant_payable_position view. That view summed only gross card
+		// volume (no fees, payouts, refunds), so pressing "Rebuild cached
+		// balances" turned a 135K balance into 7K. The only correct source is
+		// the ledger, so we call RebuildAllBalances: the same calculation as
+		// the `settlement rebuild-balances` CLI.
+		// إصلاح 2.3: قبل كان ينادي RefreshBalanceCache، وهذي تقرا view تجمع
+		// مبالغ البطاقات بس (بدون رسوم أو تحويلات أو استرجاعات)، فزر "إعادة
+		// حساب الأرصدة" يحوّل رصيد 135 ألف إلى 7 آلاف! المصدر الصح الوحيد هو
+		// دفتر الحسابات (ledger)، فصرنا ننادي RebuildAllBalances، نفس حساب
+		// أمر الـ CLI.
+		diffs, err := ledger.RebuildAllBalances(r.Context(), pool)
 		if err != nil {
 			log.Printf("settlement internal api: rebuild-balances failed: %v", err)
 			writeJSON(w, http.StatusInternalServerError, errorResponse{Error: "rebuild_balances_failed"})

@@ -144,18 +144,29 @@ export async function adminAuthRoutes(app: FastifyInstance): Promise<void> {
       throw new GoneError("otp_expired");
     }
 
-    // admin path doesn't have the merchant race, the challenge row is read FOR UPDATE — MK
-    if (challenge.attempt_count >= challenge.max_attempts) {
+    // Fix 1.3 (admin): the old comment said the row is read "FOR UPDATE".
+    // It is NOT (see the SELECT above), so admin had the same race as merchant
+    // login. Spend one attempt atomically FIRST, then compare the code.
+    // إصلاح 1.3 (الأدمن): التعليق القديم يقول إن الصف ينقرا "FOR UPDATE"،
+    // بس هذا غلط (شوفي الـ SELECT فوق)، فالأدمن فيه نفس مشكلة التاجر.
+    // نحسب المحاولة أول بأمر واحد ما ينقسم، وبعدين نقارن الكود.
+    const spent = await app.db.query(
+      `UPDATE admin_otp_challenges SET attempt_count = attempt_count + 1
+        WHERE id = $1 AND attempt_count < max_attempts AND consumed_at IS NULL
+        RETURNING attempt_count`,
+      [challenge.id],
+    );
+    if (spent.rowCount === 0) {
+      // No attempts left: kill the pending session.
+      // ما باقي محاولات: نلغي الجلسة المؤقتة.
       await revokeAdminSession(app.db, pending.adminSessionId);
       throw new TooManyRequestsError("too_many_attempts");
     }
 
     const matches = verifyOtpCode(code, challenge.code_salt, challenge.code_hash);
     if (!matches) {
-      await app.db.query(
-        `UPDATE admin_otp_challenges SET attempt_count = attempt_count + 1 WHERE id = $1`,
-        [challenge.id],
-      );
+      // The attempt was already counted above.
+      // المحاولة انحسبت فوق خلاص.
       throw new UnauthorizedError("invalid_code");
     }
 

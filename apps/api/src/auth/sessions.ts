@@ -86,10 +86,19 @@ export async function lookupSession(
     merchant_id: string;
     role: "owner" | "finance" | "support";
   }>(
+    // Fix 1.1: before, this matched the token only, so a "pending" session
+    // (password OK, OTP not entered yet) was accepted as fully logged in.
+    // Now we also require authenticated = true, which is set only after
+    // the OTP is verified (see promoteSession above).
+    // إصلاح 1.1: قبل كان يطابق الـ token بس، فالجلسة "المؤقتة" (الباسوورد
+    // صح بس الـ OTP ما انكتب) كانت تنقبل كأنها دخول كامل. الحين نشترط
+    // authenticated = true، وهذي ما تصير true إلا بعد التحقق من الـ OTP
+    // (شوفي promoteSession فوق).
     `SELECT s.id AS session_id, s.merchant_user_id, mu.merchant_id, mu.role
        FROM live_sessions s
        JOIN merchant_users mu ON mu.id = s.merchant_user_id
-      WHERE s.token_hash = $1`,
+      WHERE s.token_hash = $1
+        AND s.authenticated = true`,
     [tokenHash],
   );
   const row = result.rows[0];

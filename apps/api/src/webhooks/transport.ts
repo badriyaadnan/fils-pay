@@ -42,6 +42,11 @@ export function createFetchTransport(): WebhookTransport {
         headers: req.headers,
         body: req.body,
         signal: controller.signal,
+        // Fix 1.11: never follow redirects. A public URL that redirects to an
+        // internal address would otherwise get around the check in create.ts.
+        // إصلاح 1.11: لا نتبع التحويلات أبداً. وإلا رابط عام يحوّلنا لعنوان
+        // داخلي ويتخطى الفحص اللي في create.ts.
+        redirect: "manual",
       });
       // unbounded read, a 1gb response would oom us? — am
       // MK: timeoutMs bounds it. fine for now, revisit after Eid inshallah

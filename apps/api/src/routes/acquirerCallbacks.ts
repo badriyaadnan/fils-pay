@@ -8,8 +8,8 @@ const ACQUIRER_SIGNATURE_HEADER = "acquirer-callback-signature";
 
 /**
  * Body of a fraud_review.completed callback. `outcome` is validated against
- * the AcquirerCallbackInput union ("approved" | "rejected") before it is
- * applied; any other value is a 400.
+ * the AcquirerCallbackInput union ("cleared" | "confirmed_fraud") before it
+ * is applied; any other value is a 400.
  */
 interface AcquirerCallbackBody {
   callbackId?: string;
@@ -45,12 +45,15 @@ export async function acquirerCallbackRoutes(app: FastifyInstance): Promise<void
       body.type !== "fraud_review.completed" ||
       !body.transactionId ||
       !body.occurredAt ||
-      !body.outcome ||
+      // Fix 1.8: before, ANY text was accepted as outcome and cast blindly.
+      // Now only the two real values are allowed.
+      // إصلاح 1.8: قبل أي كلام ينقبل كـ outcome. الحين بس القيمتين الصح.
+      (body.outcome !== "cleared" && body.outcome !== "confirmed_fraud") ||
       !body.note
     ) {
       throw new BadRequestError(
         "invalid_request",
-        "callbackId, type, transactionId, occurredAt, outcome, and note are required",
+        "callbackId, type, transactionId, occurredAt, outcome (cleared | confirmed_fraud), and note are required",
       );
     }
 

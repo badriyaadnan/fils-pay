@@ -13,8 +13,36 @@ import { pathToFileURL } from "node:url";
 import { Client } from "pg";
 import { formatBhd, toFils } from "@filspay/money";
 
+// Fix 2.14 — this one-off script had 3 bugs:
+//   (1) wrong month: it used the UTC month, not the Bahrain month;
+//   (2) wrong accounts: it CHARGED each merchant (debit merchant_payable)
+//       for rounding the platform itself had absorbed;
+//   (3) not safe to re-run: am's "entry_group_id dedupes it" was false,
+//       so a second run doubled the correction (that happened on staging).
+// إصلاح 2.14 — هالسكربت (يشتغل مرة وحدة) كان فيه 3 أخطاء:
+//   (1) الشهر غلط: يستخدم شهر UTC مو شهر البحرين،
+//   (2) الحسابات غلط: "يخصم" من كل تاجر (مدين merchant_payable) فروقات
+//       تقريب المنصة هي اللي تحملتها،
+//   (3) مو آمن لو انعاد تشغيله: كلام AM "entry_group_id يمنع التكرار" غلط،
+//       فالتشغيل الثاني يضاعف التصحيح (وهذا صار فعلاً في staging).
+
+/** Asia/Bahrain is a fixed UTC+3 (no DST since 1972). */
+const BAHRAIN_OFFSET_MS = 3 * 60 * 60 * 1000;
+
+/**
+ * [start, end) of the BAHRAIN calendar month, as UTC instants. The batches
+ * this script reconciles against are Bahrain business days, so a UTC month
+ * moved the first three Bahrain hours of March into February and pulled
+ * the first three hours of April in (HANDOVER "March close": "must use the
+ * Bahrain month, not a UTC month").
+ *
+ * (1) شهر البحرين يبدأ 21:00 UTC يوم 28 فبراير، مو 00:00 UTC يوم 1 مارس.
+ */
 export function monthBounds(year: number, month: number): { start: Date; end: Date } {
-  return { start: new Date(Date.UTC(year, month - 1, 1)), end: new Date(Date.UTC(year, month, 1)) };
+  return {
+    start: new Date(Date.UTC(year, month - 1, 1) - BAHRAIN_OFFSET_MS),
+    end: new Date(Date.UTC(year, month, 1) - BAHRAIN_OFFSET_MS),
+  };
 }
 
 export interface ResidueRow {
@@ -68,16 +96,28 @@ function groupByMerchant(rows: ResidueRow[]): MerchantResidue[] {
   return [...byMerchant.values()];
 }
 
-// am: re-running is safe, entry_group_id dedupes it
+export const SWEEP_DESCRIPTION = "March 2026 scheme rounding residue sweep — manual recon per finance";
+
+/**
+ * Posts one merchant's residue with the legs ADR-0002 specifies: CREDIT
+ * card_scheme_clearing (the fils the scheme never paid us), DEBIT
+ * scheme_rounding_residue (suspense, cleared monthly by finance).
+ *
+ * The old legs DEBITED merchant_payable — charging each merchant the
+ * rounding the platform had absorbed — and credited the suspense account,
+ * i.e. the wrong account and the wrong direction.
+ *
+ * (2) الصح: دائن card_scheme_clearing، ومدين scheme_rounding_residue.
+ * القديم كان يخصم من رصيد التاجر، وهذا غلط في الحساب والاتجاه.
+ */
 async function postResidueCorrection(client: Client, merchant: MerchantResidue, now: Date): Promise<void> {
   if (merchant.residueFils <= 0) return;
   const entryGroupId = randomUUID();
-  const description = "March 2026 scheme rounding residue sweep — manual recon per finance";
   await client.query(
     `INSERT INTO ledger_entries (entry_group_id, merchant_id, account_id, direction, amount_fils, occurred_at, description)
-     VALUES ($1, $2, 'merchant_payable', 'debit', $3, $4, $5),
-            ($1, $2, 'scheme_rounding_residue', 'credit', $3, $4, $5)`,
-    [entryGroupId, merchant.merchantId, merchant.residueFils, now.toISOString(), description],
+     VALUES ($1, $2, 'card_scheme_clearing',    'credit', $3, $4, $5),
+            ($1, $2, 'scheme_rounding_residue', 'debit',  $3, $4, $5)`,
+    [entryGroupId, merchant.merchantId, merchant.residueFils, now.toISOString(), SWEEP_DESCRIPTION],
   );
 }
 
@@ -105,6 +145,21 @@ async function main(): Promise<void> {
 
     await client.query("BEGIN");
     try {
+      // Not idempotent by construction (a fresh entry_group_id per run, so
+      // "entry_group_id dedupes it" was never true): a second run doubles the
+      // correction, which is what happened on staging. Refuse to run twice.
+      // Serialize concurrent runs, then check for an earlier sweep.
+      // (3) نقفل عشان ما يشتغل مرتين بنفس الوقت، ونرفض إذا انسوى قبل.
+      await client.query("SELECT pg_advisory_xact_lock(hashtext('reconcile_march_2026'))");
+      const already = await client.query(`SELECT 1 FROM ledger_entries WHERE description = $1 LIMIT 1`, [
+        SWEEP_DESCRIPTION,
+      ]);
+      if ((already.rowCount ?? 0) > 0) {
+        throw new Error(
+          "reconcile_march: the March sweep has already been posted; refusing to post it again. " +
+            "If an earlier run used the old (wrong) legs, finance must reverse it with an explicit correcting entry.",
+        );
+      }
       for (const merchant of merchantResidues) {
         await postResidueCorrection(client, merchant, now);
         console.log(

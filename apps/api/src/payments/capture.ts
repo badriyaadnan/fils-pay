@@ -150,8 +150,10 @@ export async function captureTransaction(
       return { statusCode: 422, body };
     }
 
-    const merchantResult = await client.query<{ mdr_bps: number }>(
-      `SELECT mdr_bps FROM merchants WHERE id = $1`,
+    // Fix 2.12: also read the merchant's negotiated discount.
+    // إصلاح 2.12: نقرا نسبة الخصم المتفق عليها بعد.
+    const merchantResult = await client.query<{ mdr_bps: number; negotiated_discount_bps: number }>(
+      `SELECT mdr_bps, negotiated_discount_bps FROM merchants WHERE id = $1`,
       [input.merchantId],
     );
     const merchant = merchantResult.rows[0];
@@ -193,7 +195,25 @@ export async function captureTransaction(
 
     // outcome === 'approved'. Integer math throughout — no float ever
     // enters this path.
-    const feeFils = applyRateFils(requestedAmount, Math.max(0, effectiveMdrBps - volumeTierBonusBps));
+    //
+    // Fix 2.12: the discount is now part of the fee, computed HERE with the
+    // SAME formula as settlement (ComputeSettlementFee in
+    // apps/settlement/internal/settlement/discounted_fee.go; ARCHITECTURE:
+    // "Discounts reduce the amount the MDR is charged on"):
+    //   fee = MDR x (amount - discount% x amount)
+    // Before, the discount was applied AFTERWARDS as a separate
+    // "fee x discount" refund, in ANOTHER transaction, and only on the
+    // /v1/transactions route. So payment-link captures never got the
+    // discount, and the two roundings differed from settlement by a fil here
+    // and there (the ledger and the settlement batch didn't agree).
+    // إصلاح 2.12: الخصم صار جزء من حساب الرسوم هني، بنفس معادلة التسوية:
+    //   الرسوم = نسبة MDR × (المبلغ − نسبة الخصم × المبلغ)
+    // قبل كان الخصم ينحسب بعدين بطريقة ثانية (الرسوم × الخصم)، في عملية
+    // منفصلة، وبس في رابط /v1/transactions. فروابط الدفع ما ياخذون خصم
+    // أبداً، والتقريب يختلف عن التسوية بفلس هني وهناك.
+    const discountBps = Number(merchant.negotiated_discount_bps ?? 0);
+    const discountedAmount = subtractFils(requestedAmount, applyRateFils(requestedAmount, discountBps));
+    const feeFils = applyRateFils(discountedAmount, Math.max(0, effectiveMdrBps - volumeTierBonusBps));
     const newCapturedFils = addFils(capturedSoFar, requestedAmount);
     const newStatus = compareFils(newCapturedFils, amountAuthorized) === 0 ? "captured" : "partially_captured";
 

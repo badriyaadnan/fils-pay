@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
-import { applyRateFils, toFils } from "@filspay/money";
+import { applyRateFils, parseBhdToFils, toFils } from "@filspay/money";
 import { withTransaction } from "../db/withTransaction.js";
 import { BadRequestError } from "../lib/errors.js";
 
@@ -10,13 +10,34 @@ import { BadRequestError } from "../lib/errors.js";
  * pricing dashboard) into fils for the ledger adjustment.
  */
 export function parsePromotionalDiscountFils(raw: string): number {
-  const parsed = parseFloat(raw);
-  if (!Number.isFinite(parsed) || parsed < 0) {
+  // Fix 2.18: before, it was parseFloat(raw) * 100 → two mistakes:
+  //   1. *100 treats BD like a 2-decimal currency ("cents"). BD has 1000
+  //      fils, so "4.75" became 475 fils (0.475 BD), 10x too small.
+  //   2. parseFloat is a float, so values like "1.005" can round wrong.
+  // Now: parseBhdToFils (ADR-0001), exact integer fils, 3 decimals.
+  // إصلاح 2.18: قبل كان parseFloat(raw) × 100، وفيه غلطتين:
+  //   1. ×100 يحسب الدينار كأنه خانتين ("cents"). الدينار 1000 فلس، فـ
+  //      "4.75" تصير 475 فلس (0.475 دينار)، أصغر 10 مرات (مثل 2.1).
+  //   2. parseFloat كسور تقريبية، فأرقام مثل "1.005" ممكن تتقرب غلط.
+  // الحين: parseBhdToFils، فلوس صحيحة بالضبط بـ 3 خانات.
+  let parsed: number;
+  try {
+    parsed = parseBhdToFils(raw);
+  } catch {
     throw new BadRequestError("invalid_discount", `could not parse discount amount "${raw}"`);
   }
-  return Math.round(parsed * 100);
+  // A discount can't be negative. / الخصم ما يكون سالب.
+  if (parsed < 0) {
+    throw new BadRequestError("invalid_discount", `could not parse discount amount "${raw}"`);
+  }
+  return parsed;
 }
 
+// Note (fix 2.12): applyCaptureDiscountAdjustment below is no longer called
+// by any route. The discount is now computed inside capture.ts with the
+// settlement formula. It is kept only because its own tests still use it.
+// ملاحظة (إصلاح 2.12): الدالة تحت ما عاد أحد يناديها، الخصم صار داخل
+// capture.ts. خليناها بس لأن اختباراتها للحين تستخدمها.
 /**
  * Applies a merchant's negotiated processing discount against the MDR fee
  * capture.ts already charged, per the merchant's pricing agreement: the

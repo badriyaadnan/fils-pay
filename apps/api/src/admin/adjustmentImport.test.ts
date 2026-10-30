@@ -57,17 +57,21 @@ test("applyAdjustmentImport records the batch and its rows", async () => {
     ],
   });
 
+  // Changed (fix 2.1): these were 600 / 475 / 125, the 10x-too-small bug.
+  // 4.75 BD = 4750 fils, 1.25 BD = 1250 fils.
+  // تغيّر (إصلاح 2.1): كانت 600 / 475 / 125، يعني الخطأ نفسه (أصغر 10 مرات).
+  // 4.75 دينار = 4750 فلس، و1.25 دينار = 1250 فلس.
   assert.equal(result.rowCount, 2);
-  assert.equal(result.totalPostedFils, 600);
+  assert.equal(result.totalPostedFils, 6000);
 
   const rows = await getAdjustmentImportRows(pool, result.importId);
   assert.equal(rows.length, 2);
   assert.equal(rows[0]!.rowNumber, 1);
   assert.equal(rows[0]!.rawAmountText, "4.75");
-  assert.equal(rows[0]!.parsedAmountFils, 475);
+  assert.equal(rows[0]!.parsedAmountFils, 4750);
   assert.equal(rows[0]!.reason, "statement correction");
   assert.equal(rows[1]!.rawAmountText, "1.25");
-  assert.equal(rows[1]!.parsedAmountFils, 125);
+  assert.equal(rows[1]!.parsedAmountFils, 1250);
   assert.equal(rows[1]!.reason, null);
 });
 
