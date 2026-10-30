@@ -1,3 +1,6 @@
+// Fix 4.4 (FP-212 refunds): The transaction was looked up by id alone and refunded under ITS merchant, so any merchant could refund another merchant's transaction. Now scoped to the caller's merchant.
+// إصلاح 4.4 (ميزة الاسترجاع): كان يدوّر على العملية برقمها بس، فأي تاجر يقدر يسترجع عملية تاجر ثاني! الحين لازم تكون عملية نفس التاجر.
+
 import type { Pool } from "pg";
 import type { Fils } from "@filspay/money";
 import type { AcquirerSimulator } from "../acquirer/types.js";
@@ -59,9 +62,12 @@ export async function initiateMerchantRefund(
 ): Promise<ProcessRefundResult> {
   await assertRefundsNotOnHold(pool, input.merchantId);
 
-  const result = await pool.query<{ id: string; merchant_id: string }>(
-    `SELECT id, merchant_id FROM transactions WHERE id = $1`,
-    [input.transactionId],
+  // Scoped to the CALLER's merchant. This used to look the transaction up
+  // by id alone and then refund it under the transaction's own merchant_id,
+  // so any merchant could refund any other merchant's transaction.
+  const result = await pool.query<{ id: string }>(
+    `SELECT id FROM transactions WHERE id = $1 AND merchant_id = $2`,
+    [input.transactionId, input.merchantId],
   );
   const txn = result.rows[0];
   if (!txn) {
@@ -70,7 +76,7 @@ export async function initiateMerchantRefund(
 
   return processRefund(pool, acquirer, {
     transactionId: txn.id,
-    merchantId: txn.merchant_id,
+    merchantId: input.merchantId,
     amountFils: input.amountFils,
     idempotencyKey: input.idempotencyKey,
     actor: input.actor,

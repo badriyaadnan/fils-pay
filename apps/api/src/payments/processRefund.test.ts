@@ -1,3 +1,6 @@
+// Fix 4.2–4.6 (FP-212 refunds): New tests: concurrent refunds, refund ceiling, cumulative fee reversal, default reason.
+// إصلاح 4.2–4.6 (ميزة الاسترجاع): اختبارات جديدة: استرجاع متزامن، الحد الأقصى، الرسوم التراكمية، السبب الافتراضي.
+
 /**
  * Tests for the refund processor against a real, migrated Postgres (no DB
  * mocking). Requires `DATABASE_URL` (run `npm run migrate` first).
@@ -477,4 +480,95 @@ test("unknown transaction ids answer 404", async () => {
   });
   assert.equal(result.statusCode, 404);
   assert.deepEqual(result.body, { error: "transaction_not_found" });
+});
+
+// ---------------------------------------------------------------- added
+
+test("two concurrent refunds of the full amount: exactly one succeeds (FP-209)", async () => {
+  const merchant = await createApprovedMerchantWithApiKey("refund-concurrent");
+  const txn = await capturedTransaction(merchant.rawKey, 8_000);
+  const actor = await apiKeyActor(merchant.merchantId);
+
+  const attempt = () =>
+    processRefund(pool, approvingAcquirer, {
+      transactionId: txn.id,
+      merchantId: merchant.merchantId,
+      amountFils: toFils(8_000),
+      idempotencyKey: randomUUID(),
+      actor,
+    });
+  const results = await Promise.all([attempt(), attempt()]);
+  const codes = results.map((r) => r.statusCode);
+  // The loser waits for the row lock, then sees nothing left to refund.
+  assert.equal(codes.filter((c) => c === 200).length, 1, JSON.stringify(results));
+
+  const total = await pool.query<{ s: string }>(
+    `SELECT COALESCE(SUM(amount_fils), 0)::text AS s FROM refunds WHERE transaction_id = $1`,
+    [txn.id],
+  );
+  assert.equal(Number(total.rows[0]!.s), 8_000);
+});
+
+test("cannot refund more than was captured on a partially captured transaction", async () => {
+  const merchant = await createApprovedMerchantWithApiKey("refund-over-capture");
+  // Authorized 10.000 BD, captured only 4.000 BD.
+  const txn = await capturedTransaction(merchant.rawKey, 10_000, 4_000);
+  const actor = await apiKeyActor(merchant.merchantId);
+
+  const result = await processRefund(pool, approvingAcquirer, {
+    transactionId: txn.id,
+    merchantId: merchant.merchantId,
+    amountFils: toFils(10_000),
+    idempotencyKey: randomUUID(),
+    actor,
+  });
+  assert.equal(result.statusCode, 422, JSON.stringify(result.body));
+  assert.equal((result.body as { code: string }).code, "refund_exceeds_refundable");
+});
+
+test("another merchant's transaction answers 404 and refunds nothing", async () => {
+  const owner = await createApprovedMerchantWithApiKey("refund-owner");
+  const other = await createApprovedMerchantWithApiKey("refund-other");
+  const txn = await capturedTransaction(owner.rawKey, 3_000);
+  const otherActor = await apiKeyActor(other.merchantId);
+
+  const result = await processRefund(pool, approvingAcquirer, {
+    transactionId: txn.id,
+    merchantId: other.merchantId,
+    amountFils: toFils(3_000),
+    idempotencyKey: randomUUID(),
+    actor: otherActor,
+  });
+  assert.equal(result.statusCode, 404);
+
+  const refunds = await pool.query<{ c: number }>(`SELECT COUNT(*)::int AS c FROM refunds WHERE transaction_id = $1`, [
+    txn.id,
+  ]);
+  assert.equal(refunds.rows[0]!.c, 0);
+});
+
+test("three partial refunds reverse exactly the fee charged, no fil more or less", async () => {
+  const merchant = await createApprovedMerchantWithApiKey("refund-fee-sum", 275);
+  const txn = await capturedTransaction(merchant.rawKey, 10_001);
+  const actor = await apiKeyActor(merchant.merchantId);
+
+  for (const amount of [3_333, 3_333, 3_335]) {
+    const r = await processRefund(pool, approvingAcquirer, {
+      transactionId: txn.id,
+      merchantId: merchant.merchantId,
+      amountFils: toFils(amount),
+      idempotencyKey: randomUUID(),
+      actor,
+    });
+    assert.equal(r.statusCode, 200, JSON.stringify(r.body));
+  }
+
+  const fee = await pool.query<{ charged: string; reversed: string }>(
+    `SELECT
+       (SELECT COALESCE(SUM(amount_fils), 0) FROM ledger_entries
+         WHERE transaction_id = $1 AND account_id = 'platform_fee_revenue' AND direction = 'credit')::text AS charged,
+       (SELECT COALESCE(SUM(fee_reversed_fils), 0) FROM refunds WHERE transaction_id = $1)::text AS reversed`,
+    [txn.id],
+  );
+  assert.equal(Number(fee.rows[0]!.reversed), Number(fee.rows[0]!.charged));
 });

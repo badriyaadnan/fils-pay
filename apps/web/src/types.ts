@@ -1,3 +1,6 @@
+// Fix 4.8 (UI) (FP-212 refunds): TransactionDto gets refundedFils.
+// إصلاح 4.8 (UI) (ميزة الاسترجاع): نضيف refundedFils.
+
 /**
  * Hand-maintained DTO types mirroring the API's camelCase JSON shapes — no
  * codegen, consistent with this project's "no ORM, no generated client"
@@ -84,14 +87,14 @@ export type TransactionStatus =
 
 /** serializeTransaction() also returns `merchantId` — kept here so the type
  *  matches the wire shape exactly rather than a convenient subset of it. */
-// FH: no refundedFils on this DTO, so the drawer can't compute what's still refundable
-// refundedFils is there, a few lines down — am
 export interface TransactionDto {
   id: string;
   merchantId: string;
   status: TransactionStatus;
   amountFils: number;
   capturedFils: number;
+  /** Cumulative refunded amount (FP-212). */
+  refundedFils: number;
   currency: string;
   reference: string | null;
   acquirerReference: string;

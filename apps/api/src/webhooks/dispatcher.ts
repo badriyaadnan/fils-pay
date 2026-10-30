@@ -27,6 +27,10 @@ const STEP_B_BATCH_LIMIT = 100;
 const WEBHOOK_ELIGIBLE_EVENT_TYPES: readonly string[] = [
   "transaction.captured",
   "transaction.voided",
+  // Fix 4.8: refund.succeeded (its buildEnvelope case exists in envelope.ts,
+  // added in the same change, as YA's note above requires).
+  // إصلاح 4.8: نرسل webhook للتاجر لما ينجح استرجاع.
+  "refund.succeeded",
   "settlement.paid",
 ];
 const NOTIFY_CHANNEL = "outbox_events_channel";

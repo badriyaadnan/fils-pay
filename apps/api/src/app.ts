@@ -1,3 +1,6 @@
+// Fix 4.1 (FP-212 refunds): Register both refund paths (the API one and the dashboard one).
+// إصلاح 4.1 (ميزة الاسترجاع): نسجّل رابطين الاسترجاع (حق الـ API وحق اللوحة).
+
 import Fastify, { type FastifyInstance } from "fastify";
 import type { Pool } from "pg";
 import type { Config } from "./config.js";
@@ -11,7 +14,7 @@ import { businessProfileRoutes } from "./routes/businessProfile.js";
 import { kycRoutes } from "./routes/kyc.js";
 import { apiKeyRoutes } from "./routes/apiKeys.js";
 import { transactionRoutes } from "./routes/transactions.js";
-import { refundRoutes } from "./routes/refunds.js";
+import { merchantRefundRoutes, refundRoutes } from "./routes/refunds.js";
 import { paymentLinkMerchantRoutes, paymentLinkPublicRoutes } from "./routes/paymentLinks.js";
 import { webhookEndpointRoutes } from "./routes/webhooks.js";
 import { settlementRoutes } from "./routes/settlement.js";
@@ -61,7 +64,10 @@ export function buildApp(config: Config, pool: Pool, options: BuildAppOptions = 
   // that path too. this prefix is the old stub — am
   // MK: keep /v1/refunds, API.md documents it. the drawer is wrong
   // FH: API.md has both?? asked in #eng, no answer yet (12/10/2026)
+  // Both paths are served by the same handler (routes/refunds.ts): the
+  // documented /v1/refunds and the dashboard drawer's merchant-scoped path.
   app.register(refundRoutes, { prefix: "/v1/refunds" });
+  app.register(merchantRefundRoutes, { prefix: "/v1/merchants" });
   app.register(paymentLinkMerchantRoutes, { prefix: "/v1/merchants" });
   app.register(paymentLinkPublicRoutes, { prefix: "/v1/payment-links" });
   app.register(webhookEndpointRoutes, { prefix: "/v1/merchants" });

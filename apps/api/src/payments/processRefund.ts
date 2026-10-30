@@ -1,3 +1,6 @@
+// Fix 4.2 / 4.3 / 4.5 / 4.6 (FP-212 refunds): 4.2 two refunds at the same moment both passed (validate, then acquirer, then journal in separate transactions); now ONE transaction with the row locked. 4.3 the ceiling was authorized-refunded; now captured-refunded. 4.5 partial refunds reverse the fee cumulatively so they always add up to the fee charged. 4.6 reason NULL broke the NOT NULL rule; default "unspecified".
+// إصلاح 4.2 / 4.3 / 4.5 / 4.6 (ميزة الاسترجاع): 4.2 استرجاعين بنفس اللحظة كانوا ينجحون الاثنين (فلوس تطلع مرتين)؛ الحين عملية وحدة مقفولة. 4.3 كان يسمح يسترجع لين المبلغ "المحجوز"؛ الحين بس "المسحوب". 4.5 رسوم الاسترجاع الجزئي تنحسب تراكمياً عشان مجموعها = الرسوم الأصلية بالضبط. 4.6 السبب الفاضي كان يطيّح؛ الحين "unspecified".
+
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { ZERO_FILS, addFils, calculateRefundFee, compareFils, subtractFils, toFils, type Fils } from "@filspay/money";
@@ -36,7 +39,27 @@ interface RefundTransactionRow {
   acquirer_reference: string;
 }
 
-/** Refund business logic: validate, call the acquirer, then journal the reversal. */
+/**
+ * Refund business logic: validate, call the acquirer, journal the reversal —
+ * all in ONE transaction that holds the transaction row lock (FOR UPDATE)
+ * across the acquirer call, exactly like capture.ts does.
+ *
+ * Fixed (FP-209 "concurrent refund: double money out"): the old version
+ * validated in one transaction, called the acquirer with no lock held, and
+ * journaled in a second transaction using the refunded total it had read in
+ * the first. Two requests with different idempotency keys both passed
+ * validation and both refunded. With the row locked for the whole flow the
+ * second request waits, then validates against the updated refunded_fils.
+ *
+ * Also fixed:
+ *  - the refundable ceiling was authorized minus refunded; it is CAPTURED
+ *    minus refunded (you cannot return money that was never taken);
+ *  - the transaction is looked up WITH the merchant id, so a merchant can
+ *    never refund another merchant's transaction;
+ *  - partial refunds reverse the fee cumulatively, so the reversals of a
+ *    fully refunded transaction always sum to exactly the fee charged;
+ *  - reason defaults to 'unspecified' (migration 0070's NOT NULL check).
+ */
 export async function processRefund(
   pool: Pool,
   acquirer: AcquirerSimulator,
@@ -48,8 +71,7 @@ export async function processRefund(
     reason: input.reason ?? null,
   });
 
-  // 1 validate
-  const prepared = await withTransaction(pool, async (client) => {
+  return withTransaction(pool, async (client) => {
     const claim = await claimIdempotencyKey(client, {
       merchantId: input.merchantId,
       endpoint: ENDPOINT,
@@ -64,30 +86,28 @@ export async function processRefund(
       throw new ConflictError("request_in_progress");
     }
     if (claim.outcome === "replay") {
-      return {
-        kind: "settled" as const,
-        result: { statusCode: claim.row.responseStatusCode ?? 200, body: claim.row.responseBody },
-      };
+      return { statusCode: claim.row.responseStatusCode ?? 200, body: claim.row.responseBody };
     }
 
     const txnResult = await client.query<RefundTransactionRow>(
       `SELECT id, merchant_id, status, amount_fils, captured_fils, refunded_fils, acquirer_reference
          FROM transactions
-        WHERE id = $1`,
-      [input.transactionId],
+        WHERE id = $1 AND merchant_id = $2
+        FOR UPDATE`,
+      [input.transactionId, input.merchantId],
     );
     const txn = txnResult.rows[0];
     if (!txn) {
       const body = { error: "transaction_not_found" };
       await completeIdempotencyKey(client, claim.row.id, { statusCode: 404, body });
-      return { kind: "settled" as const, result: { statusCode: 404, body } };
+      return { statusCode: 404, body };
     }
 
     const amountAuthorized = toFils(Number(txn.amount_fils));
     const capturedFils = toFils(Number(txn.captured_fils));
     const refundedFils = toFils(Number(txn.refunded_fils));
-
-    const refundableFils = subtractFils(amountAuthorized, refundedFils);
+    const refundableFils =
+      compareFils(capturedFils, refundedFils) > 0 ? subtractFils(capturedFils, refundedFils) : ZERO_FILS;
 
     const validation = validateRefundRequest(
       {
@@ -103,54 +123,41 @@ export async function processRefund(
     if (!validation.ok) {
       const statusCode = validation.code === "transaction_not_refundable" ? 409 : 422;
       await completeIdempotencyKey(client, claim.row.id, { statusCode, body: validation });
-      return { kind: "settled" as const, result: { statusCode, body: validation } };
+      return { statusCode, body: validation };
     }
 
     // The fee this transaction was actually charged at capture, read from
-    // the ledger rather than recomputed from the merchant's current
-    // mdr_bps, so a rate change after capture can never retroactively alter
-    // what a refund reverses.
+    // the ledger (net of any capture-time discount rebate, excluding earlier
+    // refund reversals), never recomputed from today's rate.
     const feeResult = await client.query<{ fee_fils: string }>(
-      `SELECT COALESCE(SUM(amount_fils), 0)::text AS fee_fils
+      `SELECT COALESCE(SUM(CASE WHEN direction = 'credit' THEN amount_fils ELSE -amount_fils END), 0)::text AS fee_fils
          FROM ledger_entries
         WHERE transaction_id = $1
           AND account_id = 'platform_fee_revenue'
-          AND direction = 'credit'`,
+          AND description NOT LIKE 'refund:%'`,
       [txn.id],
     );
-    const feeRow = feeResult.rows[0];
-    if (!feeRow) {
-      throw new Error("processRefund: fee aggregate returned no row");
-    }
+    const feeChargedRaw = Number(feeResult.rows[0]?.fee_fils ?? 0);
+    const feeChargedFils = toFils(Math.max(0, feeChargedRaw));
+    const requestedAmount = validation.amountFils;
 
-    return {
-      kind: "proceed" as const,
+    const acquirerResult = await acquirer.refund({
+      acquirerReference: txn.acquirer_reference,
+      amountFils: requestedAmount,
+      idempotencyKey: `${claim.row.id}:${claim.row.attemptCount}`,
+    });
+
+    const prepared = {
       claimId: claim.row.id,
-      attemptCount: claim.row.attemptCount,
       transactionId: txn.id,
       merchantId: txn.merchant_id,
-      acquirerReference: txn.acquirer_reference,
       amountAuthorized,
       capturedFils,
       refundedFils,
-      feeChargedFils: toFils(Number(feeRow.fee_fils)),
-      requestedAmount: validation.amountFils,
+      feeChargedFils,
+      requestedAmount,
     };
-  });
 
-  if (prepared.kind === "settled") {
-    return prepared.result;
-  }
-
-  // 2 acquirer
-  const acquirerResult = await acquirer.refund({
-    acquirerReference: prepared.acquirerReference,
-    amountFils: prepared.requestedAmount,
-    idempotencyKey: `${prepared.claimId}:${prepared.attemptCount}`,
-  });
-
-  // 3 journal
-  return withTransaction(pool, async (client) => {
     if (acquirerResult.outcome === "declined") {
       const body = { error: "refund_declined" };
       await completeIdempotencyKey(client, prepared.claimId, { statusCode: 402, body });
@@ -168,10 +175,12 @@ export async function processRefund(
       capturedFils: prepared.capturedFils,
       refundedTotalFils: newRefundedTotal,
     });
-    const feeReversedFils = calculateRefundFee(
-      prepared.capturedFils,
-      prepared.feeChargedFils,
-      prepared.requestedAmount,
+    // Cumulative proportional reversal: fee share of everything refunded so
+    // far, minus the share already reversed. Rounding each partial on its
+    // own could reverse a fil more or less than was charged in total.
+    const feeReversedFils = subtractFils(
+      calculateRefundFee(prepared.capturedFils, prepared.feeChargedFils, newRefundedTotal),
+      calculateRefundFee(prepared.capturedFils, prepared.feeChargedFils, prepared.refundedFils),
     );
 
     const refundResult = await client.query<{ id: string; occurred_at: Date }>(
@@ -186,7 +195,7 @@ export async function processRefund(
         prepared.requestedAmount,
         feeReversedFils,
         acquirerResult.acquirerReference,
-        input.reason ?? null,
+        input.reason ?? "unspecified",
         input.actor.type,
         input.actor.id,
       ],

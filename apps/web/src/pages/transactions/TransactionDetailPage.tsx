@@ -1,3 +1,6 @@
+// Fix 4.8 (UI) (FP-212 refunds): Shows the Refund button (RefundDrawer) and the refunded amount.
+// إصلاح 4.8 (UI) (ميزة الاسترجاع): يعرض زر Refund والمبلغ المسترجع.
+
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
@@ -10,6 +13,7 @@ import { ApiError, describeError } from "../../api/client.js";
 import { RequireRole } from "../../auth/RequireRole.js";
 import { bhd, dash, dateTime } from "../../format.js";
 import type { TransactionDto, TransactionEventDto } from "../../types.js";
+import { RefundDrawer } from "./RefundDrawer.js";
 
 type LoadState =
   | { kind: "loading" }
@@ -26,8 +30,6 @@ type LoadState =
  * for both (a `403` would confirm a foreign transaction's existence), and
  * this page does not undo that by guessing.
  */
-// MK: timeline renders refund events fine
-// FH: RefundDrawer import removed 2026-06 until the route exists
 export function TransactionDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [state, setState] = useState<LoadState>({ kind: "loading" });
@@ -149,6 +151,8 @@ export function TransactionDetailPage() {
         </dd>
         <dt>Authorized amount</dt>
         <dd>{bhd(txn.amountFils)}</dd>
+        <dt>Refunded</dt>
+        <dd>{bhd(txn.refundedFils ?? 0)}</dd>
         <dt>Captured amount</dt>
         <dd>{bhd(txn.capturedFils)}</dd>
         <dt>Currency</dt>
@@ -221,6 +225,9 @@ export function TransactionDetailPage() {
           </div>
         ) : null}
       </RequireRole>
+
+      {/* FP-212: refunds (role-gated inside the drawer). */}
+      <RefundDrawer txn={txn} onRefunded={load} />
 
       <h2>Event timeline</h2>
       <table className="dash-table">

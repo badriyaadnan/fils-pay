@@ -218,6 +218,31 @@ func CloseBatch(ctx context.Context, db *pgxpool.Pool, merchantID uuid.UUID, bus
 	}
 	netPayout := NetPayableFils(batchGross, batchFee)
 
+	// Fix 4.7 (FP-212): refunds adjust the merchant's next settlement batch.
+	// Claim every succeeded refund not yet in a batch (up to this window's
+	// end, so a backlog rolls into the next close) and deduct what it
+	// returned to the cardholder net of the fee it gave back. The refund's
+	// own ledger legs were posted at refund time, so paying the reduced net
+	// keeps merchant_payable at zero. If the day's captures cannot cover the
+	// refunds, they stay unclaimed and roll forward (a payout is never
+	// negative). Before, settlement ignored refunds completely, so the
+	// merchant was paid the full amount AND the cardholder got money back.
+	// إصلاح 4.7: الاسترجاع ينخصم من دفعة التاجر الجاية. ناخذ كل استرجاع ناجح
+	// ما دخل دفعة للحين، ونخصم (المبلغ المسترجع − الرسوم اللي رجعت). لو
+	// عمليات اليوم ما تكفي، الاسترجاع ينتظر للدفعة اللي بعدها (الدفعة ما تكون
+	// سالبة أبداً). قبل: التسوية تتجاهل الاسترجاع، فالتاجر ياخذ المبلغ كامل
+	// والزبون بعد يرجع له، يعني المنصة تدفع مرتين!
+	refundIDs, refundNetFils, err := claimableRefunds(ctx, tx, merchantID, end)
+	if err != nil {
+		return BatchResult{}, fmt.Errorf("settlement: CloseBatch: select refunds: %w", err)
+	}
+	if len(refundIDs) > 0 && netPayout-refundNetFils >= 0 {
+		netPayout -= refundNetFils
+		if _, err := tx.Exec(ctx, `UPDATE refunds SET settlement_batch_id = $2 WHERE id = ANY($1)`, refundIDs, batchID); err != nil {
+			return BatchResult{}, fmt.Errorf("settlement: CloseBatch: mark refunds batched: %w", err)
+		}
+	}
+
 	// Record this batch's contribution to the platform-wide lifetime
 	// processed-volume counter, in the same transaction that freezes this
 	// batch's own totals — so the counter and the batch it describes
@@ -526,4 +551,36 @@ func RunDailyBatch(ctx context.Context, db *pgxpool.Pool, businessDate time.Time
 	}
 
 	return report, nil
+}
+
+// claimableRefunds locks and returns the merchant's succeeded refunds that no
+// batch has claimed yet, occurring before `end`, with their combined net
+// effect on the payout (amount refunded minus fee reversed).
+// (Fix 4.7) ترجع الاسترجاعات الناجحة اللي ما دخلت دفعة، ومجموع أثرها.
+func claimableRefunds(ctx context.Context, tx pgx.Tx, merchantID uuid.UUID, end time.Time) ([]uuid.UUID, money.Fils, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT id, amount_fils, fee_reversed_fils
+		  FROM refunds
+		 WHERE merchant_id = $1 AND status = 'succeeded'
+		   AND settlement_batch_id IS NULL
+		   AND occurred_at < $2
+		 ORDER BY occurred_at
+		 FOR UPDATE
+	`, merchantID, end)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	var net money.Fils
+	for rows.Next() {
+		var id uuid.UUID
+		var amount, feeReversed int64
+		if err := rows.Scan(&id, &amount, &feeReversed); err != nil {
+			return nil, 0, err
+		}
+		ids = append(ids, id)
+		net += money.Fils(amount - feeReversed)
+	}
+	return ids, net, rows.Err()
 }

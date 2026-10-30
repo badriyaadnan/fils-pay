@@ -1,3 +1,6 @@
+// Fix 4.1 (FP-212 refunds): The old test asserted the 501 stub. Now: missing Idempotency-Key = 400, a real refund + replay refunds nothing more, cross-merchant refund = 404.
+// إصلاح 4.1 (ميزة الاسترجاع): الاختبار القديم كان يتأكد من 501. الحين يختبر الاسترجاع الحقيقي، والتكرار، وتاجر ثاني = 404.
+
 /**
  * Route-level tests for the transactions surface — authorize, capture,
  * void, and reads — using `app.inject(...)` against `buildApp()` and a
@@ -286,16 +289,59 @@ test("GET /v1/transactions/:id/events returns the timeline in chronological orde
   assert.equal(events[2]!.amountFils, 4_000);
 });
 
-// delete/replace this when FP-212 lands — am
-// MK: keep it until the route is behind the feature flag (REFUNDS_V2), then flip the assertion
-test("POST /v1/refunds returns 501 not_implemented", async () => {
-  const { rawKey } = await createApprovedMerchantWithApiKey("refund-stub");
+// Changed (FP-212 landed): the stub test asserted 501. Refunds are routed now.
+test("POST /v1/refunds without an Idempotency-Key is a 400", async () => {
+  const { rawKey } = await createApprovedMerchantWithApiKey("refund-no-key");
   const res = await app.inject({
     method: "POST",
     url: "/v1/refunds",
     headers: authHeader(rawKey),
     payload: {},
   });
-  assert.equal(res.statusCode, 501, res.body);
-  assert.equal(res.json().error, "not_implemented");
+  assert.equal(res.statusCode, 400, res.body);
+});
+
+test("POST /v1/refunds refunds a captured transaction; a replay with the same key refunds nothing more", async () => {
+  const { rawKey } = await createApprovedMerchantWithApiKey("refund-route");
+  const txn = await authorize(rawKey, 5_000);
+  const captured = await capture(rawKey, txn.id);
+  assert.equal(captured.statusCode, 200, captured.body);
+
+  const key = randomUUID();
+  const send = () =>
+    app.inject({
+      method: "POST",
+      url: "/v1/refunds",
+      headers: { ...authHeader(rawKey), "idempotency-key": key },
+      payload: { transactionId: txn.id, amountFils: 2_000, reason: "customer return" },
+    });
+  const first = await send();
+  assert.equal(first.statusCode, 200, first.body);
+  assert.equal(first.json().amountFils, 2_000);
+  assert.equal(first.json().transactionStatus, "partially_refunded");
+
+  const replay = await send();
+  assert.equal(replay.statusCode, 200, replay.body);
+  assert.equal(replay.json().id, first.json().id);
+
+  const total = await pool.query<{ s: string }>(
+    `SELECT COALESCE(SUM(amount_fils), 0)::text AS s FROM refunds WHERE transaction_id = $1`,
+    [txn.id],
+  );
+  assert.equal(Number(total.rows[0]!.s), 2_000);
+});
+
+test("cross-tenant refund (wrong merchant) is a 404 and refunds nothing", async () => {
+  const owner = await createApprovedMerchantWithApiKey("refund-tenant-owner");
+  const intruder = await createApprovedMerchantWithApiKey("refund-tenant-intruder");
+  const txn = await authorize(owner.rawKey, 5_000);
+  await capture(owner.rawKey, txn.id);
+
+  const res = await app.inject({
+    method: "POST",
+    url: "/v1/refunds",
+    headers: { ...authHeader(intruder.rawKey), "idempotency-key": randomUUID() },
+    payload: { transactionId: txn.id },
+  });
+  assert.equal(res.statusCode, 404, res.body);
 });

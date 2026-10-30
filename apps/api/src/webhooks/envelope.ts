@@ -1,3 +1,6 @@
+// Fix 4.8 (FP-212 refunds): buildEnvelope now handles refund.succeeded (must exist BEFORE the dispatcher sends that type, or the whole queue stalls).
+// إصلاح 4.8 (ميزة الاسترجاع): نضيف شكل رسالة refund.succeeded (لازم يكون موجود قبل ما المرسل يرسله، وإلا كل الرسائل توقف).
+
 /**
  * The public webhook payload envelope. The outbox row's own `payload` is an
  * internal implementation detail; a webhook body is a contract external merchants write
@@ -6,7 +9,7 @@
  * the outbox payload unchanged.
  */
 
-export type WebhookEventType = "transaction.captured" | "transaction.voided" | "settlement.paid";
+export type WebhookEventType = "transaction.captured" | "transaction.voided" | "refund.succeeded" | "settlement.paid";
 
 export interface WebhookEnvelope {
   /** = webhook_deliveries.delivery_event_id — the dedup key */
@@ -64,6 +67,22 @@ export function buildEnvelope(deliveryEventId: string, outboxEvent: OutboxEventF
         data: {
           transactionId: outboxEvent.aggregateId,
           merchantId: outboxEvent.payload.merchantId,
+        },
+      };
+    case "refund.succeeded":
+      return {
+        id: deliveryEventId,
+        type: "refund.succeeded",
+        createdAt,
+        data: {
+          transactionId: outboxEvent.aggregateId,
+          merchantId: outboxEvent.payload.merchantId,
+          refundId: outboxEvent.payload.refundId,
+          amountFils: outboxEvent.payload.amountFils,
+          feeReversedFils: outboxEvent.payload.feeReversedFils,
+          refundedTotalFils: outboxEvent.payload.refundedTotalFils,
+          // public name, same renaming as transaction.captured
+          status: outboxEvent.payload.newStatus,
         },
       };
     case "settlement.paid":

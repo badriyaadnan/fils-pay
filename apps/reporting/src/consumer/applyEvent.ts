@@ -1,3 +1,6 @@
+// Fix 4.8 (FP-212 refunds): Reporting now handles refund.succeeded (Bahrain date, like every other rollup).
+// إصلاح 4.8 (ميزة الاسترجاع): التقارير صارت تحسب الاسترجاعات (بتاريخ البحرين).
+
 import type { PoolClient } from "pg";
 import { toBahrainDateString } from "../bahrainDate.js";
 
@@ -167,7 +170,10 @@ export async function applyDailySummaryRollup(
   occurredAt: Date,
   amountFils: number,
 ): Promise<void> {
-  const summaryDate = occurredAt.toISOString().slice(0, 10);
+  // Bahrain calendar date, like every other rollup in this table (0027).
+  // toISOString().slice(0, 10) gave the UTC date, putting refunds made
+  // between 00:00 and 03:00 Bahrain time on the previous day.
+  const summaryDate = toBahrainDateString(occurredAt);
   await client.query(
     `INSERT INTO merchant_daily_volume (merchant_id, volume_date, refund_count, refund_gross_fils, last_updated_at)
      VALUES ($1, $2, 1, $3, now())
@@ -194,6 +200,10 @@ export async function applyEvent(client: PoolClient, row: OutboxEventRow): Promi
       return applyTransactionCaptured(client, row);
     case "transaction.voided":
       return applyTransactionVoided(client, row);
+    case "refund.succeeded": {
+      const payload = row.payload as { merchantId: string; amountFils: number };
+      return applyDailySummaryRollup(client, payload.merchantId, row.created_at, Number(payload.amountFils));
+    }
     case "settlement.batch_closed":
       return applyBatchClosed(client, row);
     default:

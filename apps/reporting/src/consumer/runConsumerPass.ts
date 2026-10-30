@@ -1,3 +1,6 @@
+// Fix 4.8 (FP-212 refunds): Reporting now reads refund.succeeded events.
+// إصلاح 4.8 (ميزة الاسترجاع): التقارير صارت تقرا أحداث الاسترجاع.
+
 import type { Pool } from "pg";
 import type { EventType } from "@filspay/events";
 import { withTransaction } from "../db/withTransaction.js";
@@ -9,6 +12,7 @@ import { applyEvent, type OutboxEventRow } from "./applyEvent.js";
 export const REPORTING_EVENT_TYPES: readonly EventType[] = [
   "transaction.captured",
   "transaction.voided",
+  "refund.succeeded",
   "settlement.batch_closed",
 ];
 
