@@ -95,7 +95,13 @@ services:
       SETTLEMENT_INTERNAL_URL: http://settlement:8091
       # Max requests in progress at once; more get 503 + Retry-After.
       # أقصى عدد طلبات بنفس اللحظة، والزايد ياخذ 503.
-      API_MAX_IN_FLIGHT: "32"
+      API_MAX_IN_FLIGHT: "48"
+      # Load test showed the bottleneck: authorize and capture each keep a DB
+      # connection open while waiting 100-400 ms for the acquirer, so 5
+      # connections capped checkout at ~9/s while the CPU was mostly idle.
+      # اختبار الضغط بيّن السبب: الدفع يمسك اتصال بقاعدة البيانات وهو ينتظر
+      # البنك (100-400ms)، فـ 5 اتصالات بس كانت تحد الدفع بـ 9 بالثانية تقريباً.
+      PG_POOL_MAX: "20"
       # Keep Node's heap under the 512 MB limit. / ذاكرة Node أقل من حد 512.
       NODE_OPTIONS: "--max-old-space-size=384"
     env_file: .env.docker
