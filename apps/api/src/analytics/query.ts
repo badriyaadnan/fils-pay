@@ -303,7 +303,15 @@ export async function getRecentLedgerActivity(
     `SELECT id, account_id, direction, amount_fils, occurred_at, description
        FROM ledger_entries
       WHERE merchant_id = $1
-        AND (occurred_at AT TIME ZONE 'Asia/Bahrain')::date BETWEEN $2::date AND $3::date
+        -- Fix 3.8 / إصلاح 3.8: نفس الفترة بتوقيت البحرين، بس مكتوبة كـ"من
+        -- لين" على العمود مباشرة، فقاعدة البيانات تقدر تستخدم الفهرس (index)
+        -- بدل ما تقرا كل صفوف التاجر.
+        -- Same Bahrain-date range as before, written as a plain range on
+        -- occurred_at so idx_ledger_entries_merchant_occurred (0007) can be
+        -- used. Wrapping the column in AT TIME ZONE ... ::date forced a scan
+        -- of every ledger row of the merchant ("suspiciously slow").
+        AND occurred_at >= ($2::date::timestamp AT TIME ZONE 'Asia/Bahrain')
+        AND occurred_at <  (($3::date + 1)::timestamp AT TIME ZONE 'Asia/Bahrain')
       ORDER BY occurred_at DESC
       LIMIT 200`,
     [input.merchantId, input.from, input.to],

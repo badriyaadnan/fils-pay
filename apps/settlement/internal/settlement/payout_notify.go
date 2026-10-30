@@ -83,14 +83,25 @@ func EnqueuePayoutNotifications(ctx context.Context, db *pgxpool.Pool) (int, err
 		if err != nil {
 			return count, fmt.Errorf("settlement: EnqueuePayoutNotifications: marshal payload: %w", err)
 		}
-		_, err = db.Exec(ctx, `
+		// Fix 3.3: the NOT EXISTS above is only a pre-filter: two concurrent
+		// scans (daemon + `run-batch`) both pass it and both insert, so the
+		// merchant got "your payout is on the way" twice. (FH asked; the AI
+		// answer "outbox_events has a unique index" was false: there was none.)
+		// Migration 0075 adds that unique index, and ON CONFLICT makes the
+		// second insert a harmless no-op.
+		// إصلاح 3.3: فحص NOT EXISTS فوق ما يكفي، لأن لو اشتغل اثنين بنفس الوقت
+		// الاثنين يعدّون الفحص ويكتبون، فالتاجر يوصله الإشعار مرتين. (والجواب
+		// اللي قاله الذكاء الاصطناعي لـ FH "فيه unique index" كان غلط، ما كان
+		// فيه.) الحين migration 0075 يضيف الـ index، والثاني ينتجاهل.
+		tag, err := db.Exec(ctx, `
 			INSERT INTO outbox_events (event_type, aggregate_type, aggregate_id, payload)
 			VALUES ('settlement.paid', 'settlement_batch', $1, $2)
+			ON CONFLICT (aggregate_id) WHERE event_type = 'settlement.paid' DO NOTHING
 		`, b.id, payload)
 		if err != nil {
 			return count, fmt.Errorf("settlement: EnqueuePayoutNotifications: insert batch %s: %w", b.id, err)
 		}
-		count++
+		count += int(tag.RowsAffected())
 	}
 	return count, nil
 }

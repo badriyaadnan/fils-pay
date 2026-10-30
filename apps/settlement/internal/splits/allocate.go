@@ -6,6 +6,7 @@ package splits
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -160,6 +161,22 @@ func PayoutSplitBatch(ctx context.Context, db *pgxpool.Pool, batchID uuid.UUID) 
 	_, err = tx.Exec(ctx, `UPDATE settlement_batches SET status = 'paid', paid_at = now() WHERE id = $1`, batchID)
 	if err != nil {
 		return SplitPayoutResult{}, err
+	}
+
+	// Fix 3.4: the payout-rail (bank) instruction record, ONE per paid batch
+	// (0057, 0075), written in the same transaction that marks the batch paid.
+	// It used to be a side effect of webhook delivery in apps/api's
+	// dispatcher: one per webhook endpoint, or none at all.
+	// إصلاح 3.4: تعليمة الصرف للبنك، وحدة بس لكل دفعة مدفوعة، تنكتب بنفس
+	// العملية اللي تعلّم الدفعة "مدفوعة". قبل كانت تنكتب مع كل webhook.
+	if netPayout > 0 {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO settlement_payout_disbursements (settlement_batch_id, amount_fils, disbursement_reference)
+			VALUES ($1, $2, 'disb_' || gen_random_uuid())
+			ON CONFLICT (settlement_batch_id) WHERE duplicate_of IS NULL DO NOTHING
+		`, batchID, netPayout); err != nil {
+			return SplitPayoutResult{}, fmt.Errorf("splits: PayoutSplitBatch: record disbursement: %w", err)
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {

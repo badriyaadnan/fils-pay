@@ -5,7 +5,6 @@ import { withTransaction } from "../db/withTransaction.js";
 import { decodeEncryptionKey, decryptSecret } from "./secretCrypto.js";
 import { signPayload } from "./sign.js";
 import { buildEnvelope } from "./envelope.js";
-import { recordPayoutDisbursementEffect } from "./payoutDisbursement.js";
 import { WEBHOOK_DELIVERY_ID_HEADER, WEBHOOK_SIGNATURE_HEADER } from "./headers.js";
 import type { WebhookTransport } from "./transport.js";
 
@@ -34,12 +33,15 @@ const NOTIFY_CHANNEL = "outbox_events_channel";
 
 type PreDeliveryEffect = (pool: Pool, payload: Record<string, unknown>) => Promise<void>;
 
-const PRE_DELIVERY_EFFECTS: Record<string, PreDeliveryEffect> = {
-  "settlement.paid": async (pool, payload) => {
-    const data = payload.data as { settlementBatchId: string; netPayoutFils: number };
-    await recordPayoutDisbursementEffect(pool, data.settlementBatchId, Number(data.netPayoutFils));
-  },
-};
+// Fix 3.4: was "settlement.paid" -> recordPayoutDisbursementEffect. Recording
+// a payout instruction as a SIDE EFFECT of a webhook delivery wrote one per
+// webhook endpoint (two endpoints = two disbursements to the bank) and NONE
+// for a merchant with no endpoint. The settlement worker now records it
+// inside PayoutBatch's own transaction (apps/settlement, migration 0075).
+// إصلاح 3.4: قبل، تعليمة الصرف للبنك كانت تنكتب "مع كل إرسال webhook":
+// تاجر عنده رابطين webhook = تعليمتين صرف!، وتاجر ما عنده = ولا وحدة.
+// الحين تنكتب مرة وحدة داخل عملية الدفع نفسها (في Go).
+const PRE_DELIVERY_EFFECTS: Record<string, PreDeliveryEffect> = {};
 
 export type DispatcherConfig = Pick<
   Config,
@@ -155,7 +157,12 @@ async function attemptOneDelivery(
 ): Promise<void> {
   const key = decodeEncryptionKey(config.webhookSecretEncryptionKey);
   const secret = decryptSecret(row.secret_ciphertext, key);
-  const { signature } = signPayload(row.payload, secret);
+// Fix 3.5 (FP-240): sign EXACTLY the bytes that are sent.
+// إصلاح 3.5: نوقّع نفس النص اللي ينرسل بالضبط.
+  // (row.payload comes from a jsonb column, which re-orders keys, so the
+  // canonical form and the sent form differed.)
+  const body = JSON.stringify(row.payload);
+  const { signature } = signPayload(body, secret);
 
   if (row.attempt_count === 0) {
     const effect = PRE_DELIVERY_EFFECTS[row.event_type];
@@ -169,7 +176,7 @@ async function attemptOneDelivery(
       [WEBHOOK_DELIVERY_ID_HEADER]: row.delivery_event_id,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(row.payload),
+    body,
     timeoutMs: config.webhookRequestTimeoutMs,
   });
 
@@ -214,17 +221,40 @@ async function attemptOneDelivery(
 }
 
 /** Step B: attempt every currently-due 'pending' delivery, sequentially. */
-// MK: no SKIP LOCKED — only ever run ONE api replica until this changes
-// FH: staging ran 2 replicas since June, never saw a dup delivery, so it's fine
+// Fix 3.3: rows used to be read with a plain SELECT, so two dispatchers (two
+// API replicas, or a slow pass still running when the next one starts) both
+// picked the SAME due row and sent it twice: the duplicate "your payout is on
+// the way" of incident 2026-08-21. (MK: "only one replica"; FH: "never saw a
+// dup".) Now rows are CLAIMED atomically: FOR UPDATE SKIP LOCKED + push
+// next_attempt_at forward by a lease, so a concurrent pass skips them.
+// attemptOneDelivery then writes the real outcome; if the process dies
+// mid-send, the lease just expires and the row is retried (the receiver can
+// dedupe on the Webhook-Delivery-Id header).
+// إصلاح 3.3: قبل كان يقرا الصفوف بـ SELECT عادي، فلو اشتغل اثنين بنفس الوقت،
+// الاثنين ياخذون نفس الصف ويرسلونه مرتين. الحين "يحجز" الصفوف (SKIP LOCKED)
+// ويأجّل موعدها شوي، فالثاني يتخطاها. ولو السيرفر طاح وسط الإرسال، الحجز
+// ينتهي وينعاد إرساله.
 async function attemptDueDeliveries(pool: Pool, transport: WebhookTransport, config: DispatcherConfig): Promise<number> {
+  const leaseMs = Math.max(60_000, config.webhookRequestTimeoutMs * 3);
   const dueResult = await pool.query<DueDeliveryRow>(
-    `SELECT wd.id, wd.endpoint_id, wd.event_type, wd.delivery_event_id, wd.payload, wd.attempt_count, we.url, we.secret_ciphertext
-       FROM webhook_deliveries wd
-       JOIN webhook_endpoints we ON we.id = wd.endpoint_id
-      WHERE wd.status = 'pending' AND wd.next_attempt_at <= now()
-      ORDER BY wd.next_attempt_at ASC
-      LIMIT $1`,
-    [STEP_B_BATCH_LIMIT],
+    `WITH claimed AS (
+       SELECT wd.id
+         FROM webhook_deliveries wd
+        WHERE wd.status = 'pending' AND wd.next_attempt_at <= now()
+        ORDER BY wd.next_attempt_at ASC
+        LIMIT $1
+        FOR UPDATE SKIP LOCKED
+     ), leased AS (
+       UPDATE webhook_deliveries wd
+          SET next_attempt_at = now() + ($2::text || ' milliseconds')::interval
+         FROM claimed
+        WHERE wd.id = claimed.id
+       RETURNING wd.id, wd.endpoint_id, wd.event_type, wd.delivery_event_id, wd.payload, wd.attempt_count
+     )
+     SELECT leased.*, we.url, we.secret_ciphertext
+       FROM leased
+       JOIN webhook_endpoints we ON we.id = leased.endpoint_id`,
+    [STEP_B_BATCH_LIMIT, leaseMs],
   );
 
   for (const row of dueResult.rows) {

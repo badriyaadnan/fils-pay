@@ -8,7 +8,12 @@ import { NotFoundError } from "../lib/errors.js";
 export interface VoidInput {
   transactionId: string;
   merchantId: string;
-  actor: { type: "merchant_session" | "merchant_api_key"; id: string };
+  /** 'system' is used by the payment-link flow to release an authorization
+   *  it can no longer capture (see paymentLinks/pay.ts). */
+  // Fix 3.2: allow 'system' (the payment-link flow voids an authorization
+  // when it lost its reservation).
+  // إصلاح 3.2: نسمح بـ 'system' (صفحة الدفع تلغي الحجز لو ضاع منها الرابط).
+  actor: { type: "merchant_session" | "merchant_api_key" | "system"; id?: string | null };
 }
 
 // — YA: simplest thing that still makes the timeline read right.

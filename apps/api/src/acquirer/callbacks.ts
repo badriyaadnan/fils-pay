@@ -34,10 +34,24 @@ export async function applyAcquirerCallback(pool: Pool, callback: AcquirerCallba
     throw new NotFoundError("transaction_not_found");
   }
 
+  // Fix 3.1 (FP-201): the acquirer REdelivers callbacks (same callbackId sent
+  // again when it isn't sure we got it), and nothing deduplicated them, so the
+  // same verdict was recorded twice or more. MK's comment in 0051 claims a
+  // `processed_events` table and an FP-238 unique index; neither exists.
+  // Now migration 0073 makes callback_id unique, and ON CONFLICT DO NOTHING
+  // turns a redelivery into a harmless no-op. This also makes the retry below
+  // (withCallbackRetry) safe: retrying an insert that actually succeeded can't
+  // write a second note.
+  // إصلاح 3.1: البنك يعيد إرسال نفس الرسالة (نفس callbackId) لو ما تأكد إنها
+  // وصلت، وما كان فيه شي يمنع التكرار، فنفس النتيجة تنسجل مرتين أو أكثر.
+  // تعليق MK في 0051 يقول فيه جدول processed_events وindex من FP-238، والاثنين
+  // ما لهم وجود. الحين migration 0073 يخلي callback_id ما يتكرر، و
+  // ON CONFLICT DO NOTHING يخلي الرسالة المكررة تنتجاهل بهدوء.
   await pool.query(
     `INSERT INTO acquirer_callback_notes
         (transaction_id, merchant_id, callback_id, callback_type, outcome, note, received_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (callback_id) DO NOTHING`,
     [
       callback.transactionId,
       txnRow.merchant_id,

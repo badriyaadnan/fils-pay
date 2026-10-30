@@ -141,6 +141,26 @@ test("POST /v1/acquirer/callbacks rejects a callback sent without a signature he
   assert.equal(await noteCount(callbackId), "0");
 });
 
+// New (fix 3.1): the acquirer redelivers the SAME callback; it must be
+// recorded only once (both deliveries still answer 200).
+// جديد (إصلاح 3.1): البنك يرسل نفس الرسالة مرتين، فلازم تنسجل مرة وحدة بس.
+test("POST /v1/acquirer/callbacks records a redelivered callback only once", async () => {
+  const transactionId = await createTransaction();
+  const callbackId = `acqcb_${randomUUID()}`;
+  const body = callbackBody(transactionId, callbackId);
+
+  for (let i = 0; i < 2; i++) {
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/acquirer/callbacks",
+      headers: { "acquirer-callback-signature": signatureHeader(body) },
+      payload: body,
+    });
+    assert.equal(res.statusCode, 200);
+  }
+  assert.equal(await noteCount(callbackId), "1");
+});
+
 // New (fix 1.8): an old genuine signature must be refused (replay).
 // جديد (إصلاح 1.8): توقيع حقيقي بس قديم لازم ينرفض.
 test("POST /v1/acquirer/callbacks rejects a stale (replayed) signature", async () => {

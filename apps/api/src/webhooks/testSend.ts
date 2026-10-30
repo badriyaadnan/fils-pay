@@ -29,6 +29,8 @@ interface EndpointSecretRow {
  * fail right now, in the response, not poll a delivery log for it.
  */
 // FH: test-send signs exactly the bytes it sends, so merchants can verify against it
+// (That comment was FALSE before fix 3.5: it signed canonicalJson but sent JSON.stringify.)
+// (هالتعليق كان غلط قبل إصلاح 3.5.)
 // echoes 2kb of whatever the url returns — internal urls too? — am
 export async function sendTestWebhookEvent(
   pool: Pool,
@@ -54,12 +56,15 @@ export async function sendTestWebhookEvent(
 
   const key = decodeEncryptionKey(config.webhookSecretEncryptionKey);
   const secret = decryptSecret(row.secret_ciphertext, key);
-  const { signature } = signPayload(testPayload, secret);
+// Fix 3.5 (FP-240): sign EXACTLY the bytes that are sent.
+// إصلاح 3.5: نوقّع نفس النص اللي ينرسل بالضبط.
+  const body = JSON.stringify(testPayload);
+  const { signature } = signPayload(body, secret);
 
   const response = await transport({
     url: row.url,
     headers: { [WEBHOOK_SIGNATURE_HEADER]: signature, "Content-Type": "application/json" },
-    body: JSON.stringify(testPayload),
+    body,
     timeoutMs: config.webhookRequestTimeoutMs,
   });
 

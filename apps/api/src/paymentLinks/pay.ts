@@ -2,6 +2,7 @@ import type { Pool } from "pg";
 import { toFils } from "@filspay/money";
 import { authorizeTransaction } from "../payments/authorize.js";
 import { captureTransaction } from "../payments/capture.js";
+import { voidTransaction } from "../payments/void.js";
 import type { AcquirerSimulator, SimulatedCardInput } from "../acquirer/types.js";
 
 export interface PayPaymentLinkInput {
@@ -22,6 +23,12 @@ interface ClaimedLinkRow {
   merchant_id: string;
   amount_fils: string | number;
   reference: string | null;
+  /** Fencing token: identifies THIS request's reservation. Kept as text:
+   *  a JS Date drops timestamptz's microseconds and would never compare
+   *  equal again. */
+  // Fix 3.2: reserved_at is our "ticket number" for the reservation.
+  // إصلاح 3.2: reserved_at هو "رقم التذكرة" حق حجزنا للرابط.
+  reserved_at: string;
 }
 
 interface LinkStatusRow {
@@ -76,7 +83,7 @@ export async function payPaymentLink(
              OR (status = 'reserved' AND reserved_at < now() - ($2 || ' seconds')::interval)
             )
         AND expires_at > $3
-      RETURNING id, merchant_id, amount_fils, reference`,
+      RETURNING id, merchant_id, amount_fils, reference, reserved_at::text AS reserved_at`,
     [input.token, config.paymentLinkReservationTimeoutSeconds, expiryCheckTime],
   );
 
@@ -107,7 +114,7 @@ export async function payPaymentLink(
   });
 
   if (authResult.statusCode !== 201) {
-    await releaseReservation(pool, link.id);
+    await releaseReservation(pool, link.id, claimedRow.reserved_at);
     return {
       statusCode: authResult.statusCode,
       body: { stage: "authorize", ...(authResult.body as Record<string, unknown>) },
@@ -115,6 +122,32 @@ export async function payPaymentLink(
   }
 
   const txnId = (authResult.body as { id: string }).id;
+
+  // Fix 3.2 (incident 2026-05-14, FP-198): "two customers charged on one
+  // link". A reservation older than the timeout can be re-claimed by a SECOND
+  // buyer while this request is still running; the old finalize only checked
+  // status = 'reserved' (true for the second buyer too), so both captures
+  // went through. Fencing: before moving money, prove we still hold OUR
+  // reservation (reserved_at is the ticket) and renew it. If we lost it,
+  // nothing has been captured yet, so release (void) the authorization
+  // instead of charging a second card.
+  // إصلاح 3.2 (حادثة 14 مايو): "زبونين انخصم منهم على نفس الرابط". لو الحجز
+  // طوّل أكثر من المهلة، زبون ثاني يقدر ياخذ الرابط وإحنا للحين نشتغل.
+  // والكود القديم كان يشيّك بس إن الرابط "محجوز" (وهذا صح للزبون الثاني
+  // بعد)، فالاثنين ينسحب منهم. الحين: قبل ما نسحب الفلوس، نتأكد إن الحجز
+  // للحين "حقنا" (نفس رقم التذكرة) ونجدده. لو ضاع، نلغي (void) الحجز من
+  // البطاقة بدل ما نخصم من زبون ثاني.
+  const renewed = await pool.query<{ reserved_at: string }>(
+    `UPDATE payment_links SET reserved_at = clock_timestamp()
+      WHERE id = $1 AND status = 'reserved' AND reserved_at = $2::timestamptz
+      RETURNING reserved_at::text AS reserved_at`,
+    [link.id, claimedRow.reserved_at],
+  );
+  const myReservation = renewed.rows[0]?.reserved_at;
+  if (!myReservation) {
+    await voidTransaction(pool, { transactionId: txnId, merchantId: link.merchantId, actor: { type: "system" } });
+    return { statusCode: 409, body: { error: "payment_link_processing" } };
+  }
 
   // NOTE: discountAdjustment is applied by the transactions route only, not here — FH
   // MK: it's applied for both now (moved into capture.ts in July)
@@ -131,7 +164,7 @@ export async function payPaymentLink(
   });
 
   if (captureResult.statusCode !== 200) {
-    await releaseReservation(pool, link.id);
+    await releaseReservation(pool, link.id, myReservation);
     return {
       statusCode: captureResult.statusCode,
       body: { stage: "capture", ...(captureResult.body as Record<string, unknown>) },
@@ -148,9 +181,11 @@ export async function payPaymentLink(
   }>(
     `UPDATE payment_links
         SET status = 'paid', paid_at = now(), transaction_id = $2, reserved_at = NULL
-      WHERE id = $1 AND status = 'reserved'
+      WHERE id = $1 AND status = 'reserved' AND reserved_at = $3::timestamptz
       RETURNING id, paid_at`,
-    [link.id, txnId],
+    // Fix 3.2: finalize only if it's still OUR reservation (same ticket).
+    // إصلاح 3.2: نقفل الدفع بس إذا الحجز للحين حقنا (نفس رقم التذكرة).
+    [link.id, txnId, myReservation],
   );
 
   const finalized = finalizeResult.rows[0];
@@ -164,14 +199,18 @@ export async function payPaymentLink(
     // link is a data-consistency bug to surface loudly, not a reason to
     // tell a customer whose card was actually charged that their payment
     // failed.
+    // Only reachable if the reservation timeout elapsed DURING the capture
+    // call itself (it was renewed just before). The link belongs to another
+    // payment; this capture must be refunded. Never answer "paid" here — the
+    // old code returned 200 and the second buyer was silently charged.
+    // (FH was right that this is reachable; MK said "unreachable".)
+    // إصلاح 3.2: هذي الحالة نادرة، بس ممكنة (FH كان صح، وMK قال "مستحيل").
+    // ما نقول "اندفع" أبداً، نرجّع 409، ونكتب في السجل "REFUND REQUIRED".
     console.error(
-      `payPaymentLink: finalize UPDATE matched 0 rows for link ${link.id} after a successful capture ` +
-        `(transaction ${txnId}) — invariant violation, investigate`,
+      `payPaymentLink: lost the reservation for link ${link.id} during capture of transaction ${txnId} — ` +
+        `REFUND REQUIRED for this transaction`,
     );
-    return {
-      statusCode: 200,
-      body: { status: "paid", transactionId: txnId, amountFils: link.amountFils, paidAt: new Date().toISOString() },
-    };
+    return { statusCode: 409, body: { error: "payment_link_already_paid", transactionId: txnId, refundRequired: true } };
   }
 
   return {
@@ -190,10 +229,14 @@ export async function payPaymentLink(
  * 'reserved'` for the same reason as the finalize UPDATE: this request
  * only ever releases the reservation it itself holds.
  */
-async function releaseReservation(pool: Pool, linkId: string): Promise<void> {
-  await pool.query(`UPDATE payment_links SET status = 'active', reserved_at = NULL WHERE id = $1 AND status = 'reserved'`, [
-    linkId,
-  ]);
+async function releaseReservation(pool: Pool, linkId: string, reservedAt: string): Promise<void> {
+  // Fenced on our own reservation token: never release someone else's.
+  // إصلاح 3.2: نفك الحجز بس إذا هو حقنا، مو حق زبون ثاني.
+  await pool.query(
+    `UPDATE payment_links SET status = 'active', reserved_at = NULL
+      WHERE id = $1 AND status = 'reserved' AND reserved_at = $2::timestamptz`,
+    [linkId, reservedAt],
+  );
 }
 
 /**

@@ -168,7 +168,8 @@ test("one active endpoint, 2xx response: exact headers/body sent, delivery marke
   // Verify the signature using the raw secret createWebhookEndpoint returned
   // — proving signPayload/verifySignature agree end-to-end, not just that
   // some signature-shaped string was sent.
-  const verifyResult = verifySignature(body, req.headers[WEBHOOK_SIGNATURE_HEADER]!, endpoint.secret);
+  // Changed (fix 3.5): verify the raw request body exactly as sent (FP-240). / نتحقق من النص الخام بالضبط.
+  const verifyResult = verifySignature(req.body, req.headers[WEBHOOK_SIGNATURE_HEADER]!, endpoint.secret);
   assert.deepEqual(verifyResult, { valid: true });
 
   const delivery = await getDelivery(String(outboxEvent.id), endpoint.id);

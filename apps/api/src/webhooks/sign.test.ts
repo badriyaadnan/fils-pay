@@ -79,3 +79,15 @@ test("verifySignature uses timingSafeEqualHex, not ===: a same-length wrong sign
   assert.equal(result.valid, false);
   assert.equal(result.reason, "signature_mismatch");
 });
+
+// Added (fix 3.5, FP-240): the signature must cover the exact bytes on the wire.
+// مضاف (إصلاح 3.5): التوقيع لازم يغطي النص بالضبط زي ما انرسل.
+// A body whose key order differs from canonical order must still verify
+// against its raw string, and a re-ordered serialization must NOT.
+test("a raw body string is signed and verified byte-for-byte", () => {
+  const raw = '{"type":"transaction.captured","id":"evt_1","data":{"b":2,"a":1}}';
+  const { signature } = signPayload(raw, SECRET);
+  assert.deepEqual(verifySignature(raw, signature, SECRET), { valid: true });
+  const reordered = JSON.stringify({ id: "evt_1", type: "transaction.captured", data: { a: 1, b: 2 } });
+  assert.equal(verifySignature(reordered, signature, SECRET).reason, "signature_mismatch");
+});

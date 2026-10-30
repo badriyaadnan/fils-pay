@@ -7,7 +7,10 @@ import { requireMerchantAuth, requireMerchantRole, requireMerchantWriterActor } 
 import { authorizeTransaction, type AuthorizeInput } from "../payments/authorize.js";
 import { captureTransaction } from "../payments/capture.js";
 import { voidTransaction } from "../payments/void.js";
-import { buildTransactionsExportCsv } from "../transactions/exportCsv.js";
+// Fix 3.7: stream the CSV export instead of building it all in memory.
+// إصلاح 3.7: نرسل ملف التصدير قطعة قطعة بدل ما نبنيه كله في الذاكرة.
+import { Readable } from "node:stream";
+import { streamTransactionsExportCsvChunks } from "../transactions/exportCsv.js";
 import { getTransactionById, listTransactions } from "../transactions/query.js";
 import { listTransactionEvents } from "../transactions/events.js";
 import { BadRequestError, NotFoundError } from "../lib/errors.js";
@@ -165,17 +168,20 @@ export async function transactionRoutes(app: FastifyInstance): Promise<void> {
       const q = request.query;
       const status = q.status === undefined ? undefined : Array.isArray(q.status) ? q.status : [q.status];
 
-      const csv = await buildTransactionsExportCsv(app.db, {
+      // Fix 3.7: streamed page by page instead of building the whole CSV in
+      // memory (a big merchant could exhaust our 2 GB server).
+      // إصلاح 3.7: صفحة صفحة بدل ما نبني الملف كله في الذاكرة.
+      const chunks = streamTransactionsExportCsvChunks(app.db, {
         merchantId: request.merchantAuth!.merchantId,
         from: q.from ? new Date(q.from) : undefined,
         to: q.to ? new Date(q.to) : undefined,
         status,
       });
 
-      reply
+      return reply
         .header("content-type", "text/csv; charset=utf-8")
         .header("content-disposition", 'attachment; filename="transactions.csv"')
-        .send(csv);
+        .send(Readable.from(chunks));
     },
   );
 

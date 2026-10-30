@@ -395,6 +395,22 @@ func PayoutBatch(ctx context.Context, db *pgxpool.Pool, batchID uuid.UUID) (Payo
 		return PayoutResult{}, fmt.Errorf("settlement: PayoutBatch: update batch status: %w", err)
 	}
 
+	// Fix 3.4: the payout-rail (bank) instruction record, ONE per paid batch
+	// (0057, 0075), written in the same transaction that marks the batch paid.
+	// It used to be a side effect of webhook delivery in apps/api's
+	// dispatcher: one per webhook endpoint, or none at all.
+	// إصلاح 3.4: تعليمة الصرف للبنك، وحدة بس لكل دفعة مدفوعة، تنكتب بنفس
+	// العملية اللي تعلّم الدفعة "مدفوعة". قبل كانت تنكتب مع كل webhook.
+	if netPayout > 0 {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO settlement_payout_disbursements (settlement_batch_id, amount_fils, disbursement_reference)
+			VALUES ($1, $2, 'disb_' || gen_random_uuid())
+			ON CONFLICT (settlement_batch_id) WHERE duplicate_of IS NULL DO NOTHING
+		`, batchID, netPayout); err != nil {
+			return PayoutResult{}, fmt.Errorf("settlement: PayoutBatch: record disbursement: %w", err)
+		}
+	}
+
 	if err := balances.ApplyPayout(ctx, tx, merchantID, batchID, money.Fils(netPayout)); err != nil {
 		return PayoutResult{}, fmt.Errorf("settlement: PayoutBatch: apply balance cache delta: %w", err)
 	}

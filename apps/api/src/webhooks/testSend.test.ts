@@ -103,10 +103,11 @@ test("the signature this call site produces verifies against the endpoint's own 
   assert.equal(payload.type, "test.ping");
   assert.equal(payload.id, `test_${endpoint.id}`);
 
-  const verified = verifySignature(payload, header, endpoint.secret);
+  // Changed (fix 3.5): verify the raw body as sent (FP-240). / نتحقق من النص الخام اللي انرسل.
+  const verified = verifySignature(request.body, header, endpoint.secret);
   assert.equal(verified.valid, true, `signature must verify: ${verified.reason ?? ""}`);
 
-  const wrongSecret = verifySignature(payload, header, "whsec_not_the_right_secret");
+  const wrongSecret = verifySignature(request.body, header, "whsec_not_the_right_secret");
   assert.equal(wrongSecret.valid, false);
 });
 

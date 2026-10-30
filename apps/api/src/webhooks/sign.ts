@@ -23,17 +23,34 @@ export interface SignedPayload {
  * webhook_endpoints.secret_ciphertext (webhooks/secretCrypto.ts) before
  * calling this; sign.ts itself never touches encryption, only signing.
  *
- * Signs `${timestamp}.${canonicalJson(payload)}`, not the payload alone,
- * so a receiver can enforce its own freshness window using only what's in
- * the header — a captured genuine delivery can't be replayed by a third
- * party at an arbitrary later time with a signature that still looks fresh.
+ * Signs `${timestamp}.${body}`, not the body alone, so a receiver can
+ * enforce its own freshness window using only what's in the header.
+ *
+ * `body` must be the EXACT string that goes on the wire (FP-240, YA's
+ * ya/sign-raw). Receivers verify the raw bytes they received, as every
+ * webhook integration guide tells them to. Signing canonicalJson(payload)
+ * while sending JSON.stringify(payload) meant the signed bytes and the sent
+ * bytes differed whenever key order differed — and the payload comes back
+ * from a jsonb column, which reorders keys — so merchants' checks failed.
+ * A non-string payload is still accepted and serialized with canonicalJson
+ * for older callers; then that same string must be what is sent.
+ *
+ * Fix 3.5 / إصلاح 3.5: قبل، كان يوقّع نسخة "مرتّبة" من الرسالة (canonicalJson)
+ * بينما يرسل نسخة ثانية (JSON.stringify) ترتيب مفاتيحها مختلف (لأن قاعدة
+ * البيانات jsonb تغيّر الترتيب). والتاجر يتحقق من النص اللي وصله بالضبط،
+ * فالتوقيع ما يطابق أبداً، والتاجر ما يقدر يتأكد إن الرسالة من FilsPay.
+ * الحين: نوقّع النص نفسه اللي ينرسل.
  */
+export function bodyToSign(payload: unknown): string {
+  return typeof payload === "string" ? payload : canonicalJson(payload);
+}
+
 export function signPayload(
   payload: unknown,
   secret: string,
   timestamp: number = Math.floor(Date.now() / 1000),
 ): SignedPayload {
-  const signedString = `${timestamp}.${canonicalJson(payload)}`;
+  const signedString = `${timestamp}.${bodyToSign(payload)}`;
   const signature = createHmac("sha256", secret).update(signedString).digest("hex");
   return { timestamp, signature: `t=${timestamp},v1=${signature}` };
 }
@@ -90,7 +107,7 @@ export function verifySignature(
   if (!parsed) return { valid: false, reason: "malformed_header" };
 
   const expected = createHmac("sha256", secret)
-    .update(`${parsed.timestamp}.${canonicalJson(payload)}`)
+    .update(`${parsed.timestamp}.${bodyToSign(payload)}`)
     .digest("hex");
 
   if (!timingSafeEqualHex(expected, parsed.signature)) {
