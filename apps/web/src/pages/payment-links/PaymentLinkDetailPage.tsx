@@ -6,6 +6,7 @@ import { useDashboardAuth } from "../../auth/DashboardAuthContext.js";
 import { RequireRole } from "../../auth/RequireRole.js";
 import { bhd, dash, dateTime } from "../../format.js";
 import type { PaymentLinkDto } from "../../types.js";
+import { copyText } from "../../utils/copyText.js";
 
 /** The list endpoint's own maximum page size. */
 const LOOKUP_LIMIT = 100;
@@ -74,8 +75,8 @@ export function PaymentLinkDetailPage() {
 
   async function handleCopy(url: string): Promise<void> {
     try {
-      await navigator.clipboard.writeText(url);
-      setCopied(true);
+      // Fix 6.7: works over plain HTTP too. / إصلاح 6.7: يشتغل على HTTP بعد.
+      setCopied(await copyText(url));
     } catch {
       // No clipboard permission (or no secure context) — the URL is already
       // on screen and selectable, so there is nothing to recover from.

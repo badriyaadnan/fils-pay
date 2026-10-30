@@ -5,6 +5,7 @@ import { describeError } from "../../api/client.js";
 import { useDashboardAuth } from "../../auth/DashboardAuthContext.js";
 import { dateTime } from "../../format.js";
 import type { WebhookEndpointCreateResponse } from "../../types.js";
+import { copyText } from "../../utils/copyText.js";
 
 /**
  * `POST /v1/merchants/:merchantId/webhook-endpoints`.
@@ -44,8 +45,8 @@ export function WebhookEndpointCreatePage() {
   // MK: secret is shown once only
   async function handleCopy(secret: string): Promise<void> {
     try {
-      await navigator.clipboard.writeText(secret);
-      setCopied(true);
+      // Fix 6.7: works over plain HTTP too. / إصلاح 6.7: يشتغل على HTTP بعد.
+      setCopied(await copyText(secret));
     } catch {
       // The secret is on screen and selectable — nothing to recover from.
       setCopied(false);
